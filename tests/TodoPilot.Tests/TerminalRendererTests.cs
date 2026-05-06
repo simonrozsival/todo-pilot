@@ -2,6 +2,9 @@ namespace TodoPilot.Tests;
 
 public sealed class TerminalRendererTests
 {
+    private static string LocalClock(string timestamp) =>
+        DateTimeOffset.Parse(timestamp).ToLocalTime().ToString("HH:mm");
+
     [Fact]
     public void BuildTodoList_DoesNotTreatStatusBadgesAsMarkupTags()
     {
@@ -37,39 +40,43 @@ public sealed class TerminalRendererTests
     [Fact]
     public void FormatTodoLine_AppendsGrayCompletedTimestampOutsideGreenText()
     {
+        const string updatedAt = "2026-05-06T12:49:00+02:00";
         var todo = new TodoItem(
             "done",
             "Completed todo",
             "done",
             Description: null,
             CreatedAt: null,
-            UpdatedAt: "2026-05-06T12:49:00+02:00",
+            UpdatedAt: updatedAt,
             Dependencies: []);
+        var expectedTime = LocalClock(updatedAt);
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"));
 
         Assert.Contains("[green]", line, StringComparison.Ordinal);
         Assert.Contains("[/]", line, StringComparison.Ordinal);
-        Assert.Contains("[grey]done 5m ago ⋅ 12:49[/]", line, StringComparison.Ordinal);
-        Assert.Matches(@"\[/\]\s\[grey\]done 5m ago ⋅ 12:49\[/\]$", line);
+        Assert.Contains($"[grey]done 5m ago ⋅ {expectedTime}[/]", line, StringComparison.Ordinal);
+        Assert.Matches($@"\[/\]\s\[grey\]done 5m ago ⋅ {expectedTime}\[/\]$", line);
     }
 
     [Fact]
     public void FormatTodoLine_UsesJustNowAndBoldGreenForFirstMinuteAfterCompletedTodo()
     {
+        const string updatedAt = "2026-05-06T12:48:15+02:00";
         var todo = new TodoItem(
             "done",
             "Completed todo",
             "done",
             Description: null,
             CreatedAt: null,
-            UpdatedAt: "2026-05-06T12:48:15+02:00",
+            UpdatedAt: updatedAt,
             Dependencies: []);
+        var expectedTime = LocalClock(updatedAt);
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T12:49:10+02:00"));
 
         Assert.Contains("[bold green]", line, StringComparison.Ordinal);
-        Assert.Contains("[grey]done just now ⋅ 12:48[/]", line, StringComparison.Ordinal);
+        Assert.Contains($"[grey]done just now ⋅ {expectedTime}[/]", line, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -157,84 +164,92 @@ public sealed class TerminalRendererTests
     [Fact]
     public void FormatTodoLine_UsesUpdatedAtForInProgressStartedTimestamp()
     {
+        const string createdAt = "2026-05-06T10:24:00+02:00";
+        const string updatedAt = "2026-05-06T10:28:30+02:00";
         var todo = new TodoItem(
             "current",
             "Current todo",
             "in_progress",
             Description: null,
-            CreatedAt: "2026-05-06T10:24:00+02:00",
-            UpdatedAt: "2026-05-06T10:28:30+02:00",
+            CreatedAt: createdAt,
+            UpdatedAt: updatedAt,
             Dependencies: []);
+        var expectedUpdatedTime = LocalClock(updatedAt);
+        var unexpectedCreatedTime = LocalClock(createdAt);
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T10:29:00+02:00"));
 
         Assert.Contains("[yellow]", line, StringComparison.Ordinal);
-        Assert.Contains("[grey]started just now ⋅ 10:28[/]", line, StringComparison.Ordinal);
-        Assert.DoesNotContain("10:24", line, StringComparison.Ordinal);
+        Assert.Contains($"[grey]started just now ⋅ {expectedUpdatedTime}[/]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain(unexpectedCreatedTime, line, StringComparison.Ordinal);
     }
 
     [Fact]
     public void CreateTimestampKey_IncludesInProgressUpdatedAtStartedTimestamp()
     {
+        const string updatedAt = "2026-05-06T10:28:30+02:00";
         var snapshot = new TodoSnapshot(
             TodoReadState.Available,
-            [new TodoItem("current", "Current todo", "in_progress", null, "2026-05-06T10:24:00+02:00", "2026-05-06T10:28:30+02:00", [])],
+            [new TodoItem("current", "Current todo", "in_progress", null, "2026-05-06T10:24:00+02:00", updatedAt, [])],
             "hash",
             "1 todo(s)");
 
         var key = TerminalRenderer.CreateTimestampKey(snapshot, DateTimeOffset.Parse("2026-05-06T10:29:00+02:00"));
 
-        Assert.Contains("started just now ⋅ 10:28", key, StringComparison.Ordinal);
+        Assert.Contains($"started just now ⋅ {LocalClock(updatedAt)}", key, StringComparison.Ordinal);
         Assert.True(TerminalRenderer.HasDisplayedTimestamps(snapshot));
     }
 
     [Fact]
     public void FormatTodoLine_UsesCreatedAtForPendingAddedTimestamp()
     {
+        const string createdAt = "2026-05-06T13:30:00+02:00";
         var todo = new TodoItem(
             "pending",
             "Pending todo",
             "pending",
             Description: null,
-            CreatedAt: "2026-05-06T13:30:00+02:00",
+            CreatedAt: createdAt,
             UpdatedAt: null,
             Dependencies: []);
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T13:42:00+02:00"));
 
-        Assert.Contains("[grey]added 12m ago ⋅ 13:30[/]", line, StringComparison.Ordinal);
+        Assert.Contains($"[grey]added 12m ago ⋅ {LocalClock(createdAt)}[/]", line, StringComparison.Ordinal);
     }
 
     [Fact]
     public void FormatTodoLine_UsesCreatedAtForBlockedAddedTimestamp()
     {
+        const string createdAt = "2026-05-06T13:30:00+02:00";
         var todo = new TodoItem(
             "blocked",
             "Blocked todo",
             "blocked",
             Description: null,
-            CreatedAt: "2026-05-06T13:30:00+02:00",
+            CreatedAt: createdAt,
             UpdatedAt: null,
             Dependencies: []);
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T13:42:00+02:00"));
 
         Assert.Contains("[red]", line, StringComparison.Ordinal);
-        Assert.Contains("[grey]added 12m ago ⋅ 13:30[/]", line, StringComparison.Ordinal);
+        Assert.Contains($"[grey]added 12m ago ⋅ {LocalClock(createdAt)}[/]", line, StringComparison.Ordinal);
     }
 
     [Fact]
     public void CreateTimestampKey_IncludesPendingCreatedAtAddedTimestamp()
     {
+        const string createdAt = "2026-05-06T13:30:00+02:00";
         var snapshot = new TodoSnapshot(
             TodoReadState.Available,
-            [new TodoItem("pending", "Pending todo", "pending", null, "2026-05-06T13:30:00+02:00", null, [])],
+            [new TodoItem("pending", "Pending todo", "pending", null, createdAt, null, [])],
             "hash",
             "1 todo(s)");
 
         var key = TerminalRenderer.CreateTimestampKey(snapshot, DateTimeOffset.Parse("2026-05-06T13:42:00+02:00"));
 
-        Assert.Contains("added 12m ago ⋅ 13:30", key, StringComparison.Ordinal);
+        Assert.Contains($"added 12m ago ⋅ {LocalClock(createdAt)}", key, StringComparison.Ordinal);
         Assert.True(TerminalRenderer.HasDisplayedTimestamps(snapshot));
     }
 
@@ -258,13 +273,14 @@ public sealed class TerminalRendererTests
     [Fact]
     public void FormatTodoLines_RendersMutedCompletedTodoInGray()
     {
+        const string updatedAt = "2026-05-06T13:30:00+02:00";
         var todo = new TodoItem(
             "older-done",
             "Older completed todo",
             "done",
             Description: null,
             CreatedAt: "2026-05-06T13:00:00+02:00",
-            UpdatedAt: "2026-05-06T13:30:00+02:00",
+            UpdatedAt: updatedAt,
             Dependencies: []);
 
         var lines = TerminalRenderer.FormatTodoLines(
@@ -277,7 +293,7 @@ public sealed class TerminalRendererTests
         Assert.StartsWith("[grey][[✓]] Older completed todo[/]", line, StringComparison.Ordinal);
         Assert.DoesNotContain("[green]", line, StringComparison.Ordinal);
         Assert.DoesNotContain("[bold green]", line, StringComparison.Ordinal);
-        Assert.Contains("[grey]done 12m ago ⋅ 13:30[/]", line, StringComparison.Ordinal);
+        Assert.Contains($"[grey]done 12m ago ⋅ {LocalClock(updatedAt)}[/]", line, StringComparison.Ordinal);
     }
 
     [Fact]
