@@ -2,6 +2,8 @@
 
 Terminal TODO list viewer for GitHub Copilot CLI sessions.
 
+Repository: <https://github.com/simonrozsival/todo-pilot>
+
 ## Usage
 
 ```bash

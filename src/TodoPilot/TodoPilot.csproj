@@ -15,7 +15,10 @@
     <Description>Terminal TODO list viewer for GitHub Copilot CLI sessions.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageProjectUrl>https://github.com/simonrozsival/todo-pilot</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/simonrozsival/todo-pilot</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
+    <PackageTags>copilot;todo;cli;terminal;native-aot</PackageTags>
     <PublishSelfContained>true</PublishSelfContained>
     <PublishTrimmed>true</PublishTrimmed>
     <PublishAot>true</PublishAot>
