@@ -1,0 +1,253 @@
+name: Publish NuGet packages
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_PATH: src/TodoPilot/TodoPilot.csproj
+  PACKAGE_ID: todo-pilot
+  TOOL_COMMAND_NAME: todo-pilot
+  SUPPORTED_RIDS: osx-arm64 osx-x64 linux-arm64 linux-x64 win-arm64 win-x64
+
+jobs:
+  version:
+    name: Resolve package version
+    runs-on: ubuntu-latest
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+    steps:
+      - name: Derive package version from tag
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z][0-9A-Za-z.-]*)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' must look like v1.2.3 or v1.2.3-preview.1."
+            exit 1
+          fi
+          echo "package_version=$version" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore
+
+      - name: Test
+        run: dotnet test --no-build
+
+  pack-root:
+    name: Pack root tool package
+    runs-on: ubuntu-latest
+    needs:
+      - version
+      - test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Pack root package
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
+        run: |
+          rm -rf artifacts
+          mkdir -p artifacts/packages
+
+          dotnet restore "$PROJECT_PATH" \
+            -p:RuntimeIdentifiers=linux-x64 \
+            -p:Version="$PACKAGE_VERSION" \
+            -p:PackageVersion="$PACKAGE_VERSION"
+
+          dotnet pack "$PROJECT_PATH" \
+            -c Release \
+            --no-restore \
+            -p:RuntimeIdentifiers=linux-x64 \
+            -p:PublishAot=false \
+            -p:PublishSelfContained=false \
+            -p:PublishTrimmed=false \
+            -p:Version="$PACKAGE_VERSION" \
+            -p:PackageVersion="$PACKAGE_VERSION" \
+            -o artifacts/packages
+
+          find artifacts/packages \
+            -type f \
+            -name "$PACKAGE_ID.*.$PACKAGE_VERSION.nupkg" \
+            ! -name "$PACKAGE_ID.$PACKAGE_VERSION.nupkg" \
+            -delete
+
+      - name: Patch root RID map
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
+        run: |
+          package_path="artifacts/packages/$PACKAGE_ID.$PACKAGE_VERSION.nupkg"
+          if [[ ! -f "$package_path" ]]; then
+            echo "::error::Root package not found: $package_path"
+            exit 1
+          fi
+
+          tmp_dir="$(mktemp -d)"
+          unzip -q "$package_path" -d "$tmp_dir"
+
+          settings_file="$(find "$tmp_dir/tools" -path '*/any/DotnetToolSettings.xml' -type f | head -n 1)"
+          if [[ -z "$settings_file" ]]; then
+            echo "::error::Could not find DotnetToolSettings.xml in $package_path"
+            exit 1
+          fi
+
+          {
+            printf '%s\n' '<?xml version="1.0" encoding="utf-8"?>'
+            printf '%s\n' '<DotNetCliTool Version="2">'
+            printf '%s\n' '  <Commands>'
+            printf '    <Command Name="%s" />\n' "$TOOL_COMMAND_NAME"
+            printf '%s\n' '  </Commands>'
+            printf '%s\n' '  <RuntimeIdentifierPackages>'
+            for rid in $SUPPORTED_RIDS; do
+              printf '    <RuntimeIdentifierPackage RuntimeIdentifier="%s" Id="%s.%s" />\n' "$rid" "$PACKAGE_ID" "$rid"
+            done
+            printf '%s\n' '  </RuntimeIdentifierPackages>'
+            printf '%s\n' '</DotNetCliTool>'
+          } > "$settings_file"
+
+          patched_package="$RUNNER_TEMP/$PACKAGE_ID.patched.nupkg"
+          rm -f "$patched_package"
+          (cd "$tmp_dir" && zip -qr "$patched_package" .)
+          mv "$patched_package" "$package_path"
+          rm -rf "$tmp_dir"
+
+          settings="$(unzip -p "$package_path" 'tools/*/any/DotnetToolSettings.xml')"
+          grep -q "Command Name=\"$TOOL_COMMAND_NAME\"" <<<"$settings"
+          for rid in $SUPPORTED_RIDS; do
+            grep -q "RuntimeIdentifier=\"$rid\"" <<<"$settings"
+            grep -q "Id=\"$PACKAGE_ID.$rid\"" <<<"$settings"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-root
+          path: artifacts/packages/todo-pilot.${{ needs.version.outputs.package_version }}.nupkg
+          if-no-files-found: error
+
+  pack-rid:
+    name: Pack ${{ matrix.rid }}
+    needs:
+      - version
+      - test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-latest
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+          - rid: osx-x64
+            runner: macos-15-intel
+          - rid: osx-arm64
+            runner: macos-15
+          - rid: win-x64
+            runner: windows-latest
+          - rid: win-arm64
+            runner: windows-11-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install Linux Native AOT prerequisites
+        if: startsWith(matrix.rid, 'linux-')
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev
+
+      - name: Pack RID package
+        shell: bash
+        env:
+          PACKAGE_VERSION: ${{ needs.version.outputs.package_version }}
+        run: |
+          rm -rf artifacts
+          mkdir -p artifacts/packages
+
+          dotnet restore "$PROJECT_PATH" \
+            -p:RuntimeIdentifiers='${{ matrix.rid }}' \
+            -p:Version="$PACKAGE_VERSION" \
+            -p:PackageVersion="$PACKAGE_VERSION"
+
+          dotnet pack "$PROJECT_PATH" \
+            -c Release \
+            -r '${{ matrix.rid }}' \
+            --no-restore \
+            -p:RuntimeIdentifiers='${{ matrix.rid }}' \
+            -p:Version="$PACKAGE_VERSION" \
+            -p:PackageVersion="$PACKAGE_VERSION" \
+            -o artifacts/packages
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.rid }}
+          path: artifacts/packages/*.nupkg
+          if-no-files-found: error
+
+  publish:
+    name: Publish to nuget.org
+    runs-on: ubuntu-latest
+    needs:
+      - pack-root
+      - pack-rid
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: packages-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish packages
+        shell: bash
+        env:
+          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+        run: |
+          if [[ -z "${NUGET_API_KEY:-}" ]]; then
+            echo "::error::Repository secret NUGET_API_KEY is required to publish to nuget.org."
+            exit 1
+          fi
+
+          shopt -s nullglob
+          packages=(dist/*.nupkg)
+          if (( ${#packages[@]} == 0 )); then
+            echo "::error::No NuGet packages were downloaded."
+            exit 1
+          fi
+
+          for package in "${packages[@]}"; do
+            dotnet nuget push "$package" \
+              --source "https://api.nuget.org/v3/index.json" \
+              --api-key "$NUGET_API_KEY" \
+              --skip-duplicate
+          done
