@@ -93,3 +93,53 @@ public sealed record TodoSnapshot(
     public static TodoSnapshot Error(string message) =>
         new(TodoReadState.Error, [], "", message);
 }
+
+public sealed record TodoListDisplayState(
+    string? FocusedTodoId = null,
+    string? ExpandedTodoId = null,
+    bool ShowFocusMarker = false);
+
+/// <summary>
+/// Optional read-only sidebar context collected from per-session <c>session.db</c> and the global
+/// <c>session-store.db</c>. Missing tables or schema drift should produce empty sections instead of
+/// preventing the compact TODO list from rendering.
+/// </summary>
+public sealed record SessionSidebarDetails(
+    LatestCheckpointSummary? LatestCheckpoint,
+    IReadOnlyList<SessionFileActivity> Files,
+    IReadOnlyList<SessionReference> References,
+    IReadOnlyList<RecentTurnSummary> RecentTurns,
+    int UnreadInboxCount,
+    IReadOnlyList<InboxEntrySummary> InboxEntries,
+    string DataHash)
+{
+    public static SessionSidebarDetails Empty { get; } = new(null, [], [], [], 0, [], "");
+
+    public bool HasAnyContext =>
+        LatestCheckpoint is not null
+        || Files.Count > 0
+        || References.Count > 0
+        || RecentTurns.Count > 0
+        || UnreadInboxCount > 0
+        || InboxEntries.Count > 0;
+}
+
+public sealed record LatestCheckpointSummary(string Title, string? Overview);
+
+public sealed record SessionFileActivity(string FilePath, string ToolName);
+
+public sealed record SessionReference(string RefType, string RefValue);
+
+public sealed record RecentTurnSummary(string Role, string Preview);
+
+public sealed record InboxEntrySummary(string SenderName, string Summary);
+
+/// <summary>
+/// Revisit policy for future write-capable flows: create a new pending revisit TODO instead of
+/// reopening completed work, and only send prompts back to Copilot when a supported extension API
+/// exists. The current sidebar remains read-only and can surface this policy in expanded details.
+/// </summary>
+public static class RevisitPolicy
+{
+    public const string Summary = "create a new pending TODO instead of reopening completed work; prompt sending is not wired in this read-only viewer yet";
+}

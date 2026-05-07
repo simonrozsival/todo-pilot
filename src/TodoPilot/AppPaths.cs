@@ -6,7 +6,7 @@ public sealed class AppPaths
 
     public AppPaths(string? homeDirectory = null, string? currentDirectory = null)
     {
-        HomeDirectory = Path.GetFullPath(homeDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        HomeDirectory = Path.GetFullPath(ResolveHomeDirectory(homeDirectory));
         CurrentDirectory = Path.GetFullPath(currentDirectory ?? Environment.CurrentDirectory);
     }
 
@@ -48,5 +48,26 @@ public sealed class AppPaths
         }
 
         return Path.GetFullPath(startDirectory);
+    }
+
+    private static string ResolveHomeDirectory(string? homeDirectory)
+    {
+        if (!string.IsNullOrWhiteSpace(homeDirectory))
+        {
+            return homeDirectory;
+        }
+
+        var specialFolder = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(specialFolder))
+        {
+            return specialFolder;
+        }
+
+        var environmentHome = OperatingSystem.IsWindows()
+            ? Environment.GetEnvironmentVariable("USERPROFILE")
+            : Environment.GetEnvironmentVariable("HOME");
+        return string.IsNullOrWhiteSpace(environmentHome)
+            ? Environment.CurrentDirectory
+            : environmentHome;
     }
 }

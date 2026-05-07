@@ -20,10 +20,9 @@ public sealed class SessionMetadataReader
 
         try
         {
-            using var connection = new SqliteConnection(CreateReadOnlyConnectionString(_paths.GlobalSessionStorePath));
-            connection.Open();
+            using var connection = OpenReadOnlyConnection(_paths.GlobalSessionStorePath);
 
-            if (!TableExists(connection, "sessions"))
+            if (!HasColumns(connection, "sessions", "id", "cwd", "repository", "branch", "summary", "created_at", "updated_at"))
             {
                 return new Dictionary<string, SessionMetadata>(StringComparer.OrdinalIgnoreCase);
             }
@@ -77,10 +76,48 @@ public sealed class SessionMetadataReader
             DataSource = path,
             Mode = SqliteOpenMode.ReadOnly,
             Cache = SqliteCacheMode.Private,
-            Pooling = false
+            Pooling = false,
+            DefaultTimeout = 1
         };
         return builder.ToString();
     }
+
+    internal static SqliteConnection OpenReadOnlyConnection(string path)
+    {
+        SQLitePCL.Batteries_V2.Init();
+        var connection = new SqliteConnection(CreateReadOnlyConnectionString(path));
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA busy_timeout = 1000";
+        command.ExecuteNonQuery();
+        return connection;
+    }
+
+    internal static bool HasColumns(SqliteConnection connection, string tableName, params string[] columnNames)
+    {
+        if (!TableExists(connection, tableName))
+        {
+            return false;
+        }
+
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({QuoteIdentifier(tableName)})";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var name = GetString(reader, "name");
+            if (!string.IsNullOrEmpty(name))
+            {
+                columns.Add(name);
+            }
+        }
+
+        return columnNames.All(columns.Contains);
+    }
+
+    private static string QuoteIdentifier(string value) =>
+        "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
 
     private static string? GetString(SqliteDataReader reader, string column)
     {

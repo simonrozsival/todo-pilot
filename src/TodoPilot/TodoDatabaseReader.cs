@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
@@ -16,8 +17,7 @@ public sealed class TodoDatabaseReader
         try
         {
             SQLitePCL.Batteries_V2.Init();
-            using var connection = new SqliteConnection(SessionMetadataReader.CreateReadOnlyConnectionString(databasePath));
-            connection.Open();
+            using var connection = SessionMetadataReader.OpenReadOnlyConnection(databasePath);
 
             if (!SessionMetadataReader.TableExists(connection, "todos"))
             {
@@ -80,6 +80,8 @@ public sealed class TodoDatabaseReader
                     };
                 })
                 .OrderBy(GetWorkflowRank)
+                .ThenBy(GetDoneTimestampBucket)
+                .ThenByDescending(GetDoneUpdatedAt)
                 .ThenByDescending(todo => todo.Id, StringComparer.Ordinal)
                 .ToArray();
 
@@ -151,11 +153,35 @@ public sealed class TodoDatabaseReader
             "in_progress" => 0,
             "pending" when todo.BlockedBy.Count == 0 => 1,
             "pending" => 2,
-            "blocked" => 3,
             "done" => 4,
             _ when todo.BlockedBy.Count == 0 => 1,
             _ => 2
         };
+
+    private static int GetDoneTimestampBucket(TodoItem todo)
+    {
+        if (!IsDone(todo))
+        {
+            return 0;
+        }
+
+        return TryParseTimestamp(todo.UpdatedAt, out _) ? 0 : 1;
+    }
+
+    private static DateTimeOffset GetDoneUpdatedAt(TodoItem todo) =>
+        IsDone(todo) && TryParseTimestamp(todo.UpdatedAt, out var updatedAt)
+            ? updatedAt
+            : DateTimeOffset.MinValue;
+
+    private static bool IsDone(TodoItem todo) =>
+        string.Equals(todo.Status, "done", StringComparison.Ordinal);
+
+    private static bool TryParseTimestamp(string? value, out DateTimeOffset timestamp)
+    {
+        timestamp = default;
+        return !string.IsNullOrWhiteSpace(value)
+            && DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out timestamp);
+    }
 
     private sealed record TodoRow(
         string Id,

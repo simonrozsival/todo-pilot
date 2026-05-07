@@ -101,13 +101,53 @@ public sealed class TodoDatabaseReaderTests
                     "wip-a",
                     "ready-z",
                     "ready-a",
+                    "explicit-z",
+                    "explicit-a",
                     "dep-open",
                     "blocked-by-dep-z",
                     "blocked-by-dep-a",
-                    "explicit-z",
-                    "explicit-a",
                     "done-z",
                     "done-a"
+                ],
+                snapshot.Todos.Select(todo => todo.Id));
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Read_OrdersDoneTodosByUpdatedAtThenIdDescending()
+    {
+        var directory = Directory.CreateTempSubdirectory();
+        var dbPath = Path.Combine(directory.FullName, "session.db");
+        try
+        {
+            CreateEmptyTodoDatabase(dbPath);
+            ExecuteSql(dbPath, """
+                INSERT INTO todos (id, title, description, status, created_at, updated_at)
+                VALUES
+                    ('pending-z', 'Pending Z', NULL, 'pending', NULL, NULL),
+                    ('done-z-old', 'Done Z Old', NULL, 'done', NULL, '2026-05-07T10:00:00Z'),
+                    ('done-a-new', 'Done A New', NULL, 'done', NULL, '2026-05-07T12:00:00Z'),
+                    ('done-c-same', 'Done C Same', NULL, 'done', NULL, '2026-05-07T11:00:00Z'),
+                    ('done-b-same', 'Done B Same', NULL, 'done', NULL, '2026-05-07T11:00:00Z'),
+                    ('done-y-missing', 'Done Y Missing', NULL, 'done', NULL, NULL),
+                    ('done-x-invalid', 'Done X Invalid', NULL, 'done', NULL, 'not-a-date');
+                """);
+
+            var snapshot = new TodoDatabaseReader().Read(dbPath);
+
+            Assert.Equal(
+                [
+                    "pending-z",
+                    "done-a-new",
+                    "done-c-same",
+                    "done-b-same",
+                    "done-z-old",
+                    "done-y-missing",
+                    "done-x-invalid"
                 ],
                 snapshot.Todos.Select(todo => todo.Id));
         }

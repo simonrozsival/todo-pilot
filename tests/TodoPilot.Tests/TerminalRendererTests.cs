@@ -40,7 +40,7 @@ public sealed class TerminalRendererTests
     [Fact]
     public void FormatTodoLine_AppendsGrayCompletedTimestampOutsideDimCompletedText()
     {
-        const string updatedAt = "2026-05-06T12:49:00+02:00";
+        const string updatedAt = "2026-05-06T12:48:00+02:00";
         var todo = new TodoItem(
             "done",
             "Completed todo",
@@ -56,8 +56,8 @@ public sealed class TerminalRendererTests
         Assert.Contains("[dim]", line, StringComparison.Ordinal);
         Assert.Contains("[/]", line, StringComparison.Ordinal);
         Assert.DoesNotContain("[grey][[✓]]", line, StringComparison.Ordinal);
-        Assert.Contains($"[grey]done 5m ago ⋅ {expectedTime}[/]", line, StringComparison.Ordinal);
-        Assert.Matches($@"\[/\]\s\[grey\]done 5m ago ⋅ {expectedTime}\[/\]$", line);
+        Assert.Contains($"[grey]done 6m ago ⋅ {expectedTime}[/]", line, StringComparison.Ordinal);
+        Assert.Matches($@"\[/\]\s\[grey\]done 6m ago ⋅ {expectedTime}\[/\]$", line);
     }
 
     [Fact]
@@ -78,6 +78,26 @@ public sealed class TerminalRendererTests
 
         Assert.Contains("[bold green]", line, StringComparison.Ordinal);
         Assert.Contains($"[grey]done just now ⋅ {expectedTime}[/]", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatTodoLine_KeepsCompletedTodoBoldGreenForFiveMinutes()
+    {
+        const string updatedAt = "2026-05-06T12:49:00+02:00";
+        var todo = new TodoItem(
+            "done",
+            "Completed todo",
+            "done",
+            Description: null,
+            CreatedAt: null,
+            UpdatedAt: updatedAt,
+            Dependencies: []);
+        var expectedTime = LocalClock(updatedAt);
+
+        var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"));
+
+        Assert.Contains("[bold green]", line, StringComparison.Ordinal);
+        Assert.Contains($"[grey]done 5m ago ⋅ {expectedTime}[/]", line, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -265,7 +285,7 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
-    public void FormatTodoLine_UsesCreatedAtForBlockedAddedTimestamp()
+    public void FormatTodoLine_RendersBlockedStatusAsRegularPending()
     {
         const string createdAt = "2026-05-06T13:30:00+02:00";
         var todo = new TodoItem(
@@ -279,7 +299,9 @@ public sealed class TerminalRendererTests
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T13:42:00+02:00"));
 
-        Assert.Contains("[red]", line, StringComparison.Ordinal);
+        Assert.StartsWith("[[ ]] Blocked todo", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[red]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[[!]]", line, StringComparison.Ordinal);
         Assert.Contains($"[grey]added 12m ago ⋅ {LocalClock(createdAt)}[/]", line, StringComparison.Ordinal);
     }
 
@@ -387,6 +409,163 @@ public sealed class TerminalRendererTests
         Assert.Equal(0, view.TotalTodoCount);
         Assert.Equal(TodoSnapshot.EmptyMessage, snapshot.Message);
         Assert.DoesNotContain("/tmp/session.db", snapshot.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildTodoListView_RendersFocusedAndExpandedTodoDetails()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem(
+                    "todo-1",
+                    "Expand details",
+                    "pending",
+                    "Show details inline.",
+                    "2026-05-07T12:00:00+02:00",
+                    "2026-05-07T12:05:00+02:00",
+                    ["todo-0"])
+            ],
+            "hash",
+            "1 todo(s)");
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 100,
+            consoleHeight: 30,
+            scrollOffset: 0,
+            displayState: new TodoListDisplayState("todo-1", "todo-1", ShowFocusMarker: true));
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains("[blue]›[/] [[ ]] Expand details", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]description:[/] Show details inline.", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]id:[/] todo-1", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]status:[/] pending", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]dependencies:[/] todo-0", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]created:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]updated:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]inbox:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]file:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]ref:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]user:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]assistant:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]checkpoint:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]description: Show details inline.[/]", rendered, StringComparison.Ordinal);
+        Assert.True(rendered.IndexOf("[grey]description:[/]", StringComparison.Ordinal) < rendered.IndexOf("[grey]id:[/]", StringComparison.Ordinal));
+        Assert.True(rendered.IndexOf("[grey]status:[/]", StringComparison.Ordinal) < rendered.IndexOf("[grey]dependencies:[/]", StringComparison.Ordinal));
+        Assert.Equal(1, view.VisibleTodoCount);
+        Assert.True(view.Scroll.TotalLines > 1);
+    }
+
+    [Fact]
+    public void BuildTodoListView_HidesFocusMarkerWhenDisplayStateDoesNotRequestIt()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [new TodoItem("todo-1", "Focused but hidden", "pending", null, null, null, [])],
+            "hash",
+            "1 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 80,
+            consoleHeight: 10,
+            scrollOffset: 0,
+            displayState: new TodoListDisplayState("todo-1"));
+
+        Assert.DoesNotContain("[blue]›[/]", string.Join('\n', view.Lines), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildTodoListView_WrapsExpandedValuesWithStableSmallIndent()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem(
+                    "todo-1",
+                    "Expand details",
+                    "pending",
+                    "This description wraps onto a continuation line.",
+                    null,
+                    null,
+                    [])
+            ],
+            "hash",
+            "1 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 40,
+            consoleHeight: 30,
+            scrollOffset: 0,
+            SessionSidebarDetails.Empty,
+            new TodoListDisplayState("todo-1", "todo-1", ShowFocusMarker: true));
+
+        var descriptionIndex = view.Lines.ToList().FindIndex(line => line.Contains("[grey]description:[/]", StringComparison.Ordinal));
+        Assert.True(descriptionIndex >= 0);
+        Assert.DoesNotContain("[grey]This description", view.Lines[descriptionIndex], StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]", view.Lines[descriptionIndex + 1], StringComparison.Ordinal);
+        Assert.StartsWith(new string(' ', 7), view.Lines[descriptionIndex + 1], StringComparison.Ordinal);
+        Assert.False(view.Lines[descriptionIndex + 1].StartsWith(new string(' ', 19), StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BuildTodoListView_ExpandedDoneTodoDoesNotShowGenericRevisitPolicy()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [new TodoItem("done", "Done todo", "done", null, null, "2026-05-07T12:00:00+02:00", [])],
+            "hash",
+            "1 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 80,
+            consoleHeight: 30,
+            scrollOffset: 0,
+            SessionSidebarDetails.Empty,
+            new TodoListDisplayState("done", "done", ShowFocusMarker: true));
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.DoesNotContain("[grey]revisit:[/]", rendered, StringComparison.Ordinal);
+        Assert.True(view.Scroll.TotalLines > TerminalRenderer.FormatTodoLines(snapshot.Todos[0], DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"), 76).Count);
+    }
+
+    [Fact]
+    public void BuildTodoListView_DoesNotSurfaceBlockedStatusInExpandedDetails()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [new TodoItem("todo-1", "Blocked status", "blocked", null, null, null, [])],
+            "hash",
+            "1 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 80,
+            consoleHeight: 10,
+            scrollOffset: 0,
+            SessionSidebarDetails.Empty,
+            new TodoListDisplayState("todo-1", "todo-1", ShowFocusMarker: true));
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains("[grey]status:[/] pending", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("status: blocked", rendered, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -511,6 +690,32 @@ public sealed class TerminalRendererTests
             registryCwd: null);
 
         var exception = Record.Exception(() => TerminalRenderer.BuildLoadingView(session, spinnerFrame: 0, consoleWidth: 40));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void DisplayWidth_TreatsCombiningMarksAsZeroAndWideCharactersAsTwoCells()
+    {
+        Assert.Equal(1, TerminalRenderer.DisplayWidth("e\u0301"));
+        Assert.Equal(2, TerminalRenderer.DisplayWidth("界"));
+        Assert.Equal(2, TerminalRenderer.DisplayWidth("😀"));
+        Assert.Equal(1, TerminalRenderer.DisplayWidth("✓"));
+    }
+
+    [Fact]
+    public void WrapText_UsesDisplayWidthInsteadOfUtf16Length()
+    {
+        var lines = TerminalRenderer.WrapText("ab 界 cd", firstWidth: 5, continuationWidth: 5);
+
+        Assert.Equal(["ab", "界 cd"], lines);
+        Assert.All(lines, line => Assert.True(TerminalRenderer.DisplayWidth(line) <= 5));
+    }
+
+    [Fact]
+    public void WrapText_DoesNotThrowOnInvalidUtf16()
+    {
+        var exception = Record.Exception(() => TerminalRenderer.WrapText("hello\ud800world", firstWidth: 6, continuationWidth: 6));
 
         Assert.Null(exception);
     }
@@ -653,6 +858,64 @@ public sealed class TerminalRendererTests
         var second = TerminalViewer.CreateRenderKey(snapshot, now, new TerminalViewer.TerminalSize(100, 24));
 
         Assert.NotEqual(first, second);
+    }
+
+    [Fact]
+    public void CreateRenderKey_ChangesWhenFocusExpansionOrDetailsChange()
+    {
+        var snapshot = new TodoSnapshot(TodoReadState.Available, [], "hash", "0 todo(s)");
+        var now = DateTimeOffset.Parse("2026-05-06T12:54:00+02:00");
+
+        var focused = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-1", null));
+        var expanded = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-1", "todo-1"));
+        var otherFocus = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-2", null));
+        var visibleMarker = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-1", null, ShowFocusMarker: true));
+
+        Assert.NotEqual(focused, expanded);
+        Assert.NotEqual(focused, otherFocus);
+        Assert.NotEqual(focused, visibleMarker);
+    }
+
+    [Fact]
+    public void CreateDisplayState_ShowsFocusMarkerAfterRecentNavigationOrWhileExpanded()
+    {
+        var now = DateTimeOffset.Parse("2026-05-07T17:30:00+02:00");
+        var timeout = TimeSpan.FromMinutes(1);
+
+        Assert.False(TerminalViewer.CreateDisplayState("todo-1", null, null, now, timeout).ShowFocusMarker);
+        Assert.True(TerminalViewer.CreateDisplayState("todo-1", null, now.AddSeconds(-30), now, timeout).ShowFocusMarker);
+        Assert.False(TerminalViewer.CreateDisplayState("todo-1", null, now.AddSeconds(-61), now, timeout).ShowFocusMarker);
+        Assert.True(TerminalViewer.CreateDisplayState("todo-1", "todo-1", now.AddMinutes(-5), now, timeout).ShowFocusMarker);
+    }
+
+    [Fact]
+    public void SelectDefaultFocusedTodoId_PrefersCurrentThenInProgressThenPending()
+    {
+        var todos = new[]
+        {
+            new TodoItem("done", "Done", "done", null, null, null, []),
+            new TodoItem("pending", "Pending", "pending", null, null, null, []),
+            new TodoItem("wip", "WIP", "in_progress", null, null, null, [])
+        };
+
+        Assert.Equal("pending", TerminalViewer.SelectDefaultFocusedTodoId(todos, "pending"));
+        Assert.Equal("wip", TerminalViewer.SelectDefaultFocusedTodoId(todos, "missing"));
+        Assert.Null(TerminalViewer.SelectDefaultFocusedTodoId([], null));
+    }
+
+    [Fact]
+    public void MoveFocusedTodoId_ClampsByTodoId()
+    {
+        var todos = new[]
+        {
+            new TodoItem("a", "A", "pending", null, null, null, []),
+            new TodoItem("b", "B", "pending", null, null, null, []),
+            new TodoItem("c", "C", "pending", null, null, null, [])
+        };
+
+        Assert.Equal("c", TerminalViewer.MoveFocusedTodoId(todos, "a", 10));
+        Assert.Equal("a", TerminalViewer.MoveFocusedTodoId(todos, "c", -10));
+        Assert.Equal("b", TerminalViewer.MoveFocusedTodoId(todos, "a", 1));
     }
 
     [Fact]

@@ -20,6 +20,7 @@ public sealed class TerminalViewer
     {
         var staleAfter = TimeSpan.FromSeconds(20);
         var refreshInterval = TimeSpan.FromSeconds(1);
+        var focusMarkerTimeout = TimeSpan.FromMinutes(1);
         var sessions = _discovery.Discover(DateTimeOffset.UtcNow, staleAfter);
 
         if (sessions.Count == 0)
@@ -49,8 +50,10 @@ public sealed class TerminalViewer
             Console.Write("\u001b[H\u001b[2J");
             string? renderedKey = null;
             var scrollOffset = 0;
-            var pageSize = 1;
-            var maxScrollOffset = 0;
+            var visibleTodoCount = 1;
+            string? focusedTodoId = null;
+            string? expandedTodoId = null;
+            DateTimeOffset? lastFocusNavigationAt = null;
             var resizeRequested = 0;
             using var resizeWatcher = TerminalResizeWatcher.Create(() => Interlocked.Exchange(ref resizeRequested, 1));
             var databasePath = _paths.GetSessionDatabasePath(selectedSession.Registry.SessionId);
@@ -66,9 +69,8 @@ public sealed class TerminalViewer
                     var loadingFrame = 0;
                     while (!initialSnapshotTask.IsCompleted && !linkedCts.IsCancellationRequested)
                     {
-                        while (Console.KeyAvailable)
+                        while (TerminalKeyboard.TryReadKey(out var key))
                         {
-                            var key = Console.ReadKey(intercept: true);
                             if (IsQuitKey(key))
                             {
                                 linkedCts.Cancel();
@@ -85,11 +87,12 @@ public sealed class TerminalViewer
 
                     var initialNow = DateTimeOffset.Now;
                     var initialSnapshot = await initialSnapshotTask.ConfigureAwait(false);
-                    renderedKey = CreateRenderKey(initialSnapshot, initialNow);
-                    var initialView = BuildTodoList(selectedSession, initialSnapshot, initialNow, scrollOffset);
+                    focusedTodoId = SelectDefaultFocusedTodoId(initialSnapshot.Todos, focusedTodoId);
+                    var initialDisplay = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, initialNow, focusMarkerTimeout);
+                    renderedKey = CreateRenderKey(initialSnapshot, initialNow, initialDisplay);
+                    var initialView = BuildTodoList(selectedSession, initialSnapshot, initialNow, scrollOffset, initialDisplay);
                     scrollOffset = initialView.Scroll.Offset;
-                    pageSize = initialView.Scroll.PageSize;
-                    maxScrollOffset = initialView.Scroll.MaxOffset;
+                    visibleTodoCount = Math.Max(1, initialView.VisibleTodoCount);
                     ctx.UpdateTarget(initialView.Renderable);
                     ctx.Refresh();
 
@@ -98,16 +101,22 @@ public sealed class TerminalViewer
                         linkedCts.Token.ThrowIfCancellationRequested();
                         var now = DateTimeOffset.Now;
                         var snapshot = _todoReader.Read(databasePath);
-                        var renderKey = CreateRenderKey(snapshot, now);
+                        focusedTodoId = SelectDefaultFocusedTodoId(snapshot.Todos, focusedTodoId);
+                        if (expandedTodoId is not null && !snapshot.Todos.Any(todo => todo.Id == expandedTodoId))
+                        {
+                            expandedTodoId = null;
+                        }
+
+                        var display = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, now, focusMarkerTimeout);
+                        var renderKey = CreateRenderKey(snapshot, now, display);
                         var resizeRequestedNow = Interlocked.Exchange(ref resizeRequested, 0) != 0;
                         var shouldRender = ShouldRender(renderedKey, renderKey, resizeRequestedNow);
 
                         if (shouldRender)
                         {
-                            var view = BuildTodoList(selectedSession, snapshot, now, scrollOffset);
+                            var view = BuildTodoList(selectedSession, snapshot, now, scrollOffset, display);
                             scrollOffset = view.Scroll.Offset;
-                            pageSize = view.Scroll.PageSize;
-                            maxScrollOffset = view.Scroll.MaxOffset;
+                            visibleTodoCount = Math.Max(1, view.VisibleTodoCount);
                             ctx.UpdateTarget(view.Renderable);
                             ctx.Refresh();
                             renderedKey = renderKey;
@@ -116,35 +125,60 @@ public sealed class TerminalViewer
                         var until = DateTimeOffset.UtcNow + refreshInterval;
                         while (DateTimeOffset.UtcNow < until && !linkedCts.IsCancellationRequested)
                         {
-                            while (Console.KeyAvailable)
+                            while (TerminalKeyboard.TryReadKey(out var key))
                             {
-                                var key = Console.ReadKey(intercept: true);
-                                switch (key.Key)
+                                switch (TerminalKeyboard.MapTodoListKey(key))
                                 {
-                                    case ConsoleKey.Q:
+                                    case TodoListKeyAction.Quit:
                                         linkedCts.Cancel();
                                         break;
-                                    case ConsoleKey.R:
+                                    case TodoListKeyAction.Refresh:
                                         renderedKey = null;
                                         until = DateTimeOffset.UtcNow;
                                         break;
-                                    case ConsoleKey.PageDown:
-                                        scrollOffset = Math.Min(maxScrollOffset, scrollOffset + pageSize);
+                                    case TodoListKeyAction.FocusPrevious:
+                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -1);
+                                        lastFocusNavigationAt = DateTimeOffset.Now;
                                         renderedKey = null;
                                         until = DateTimeOffset.UtcNow;
                                         break;
-                                    case ConsoleKey.PageUp:
-                                        scrollOffset = Math.Max(0, scrollOffset - pageSize);
+                                    case TodoListKeyAction.FocusNext:
+                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, 1);
+                                        lastFocusNavigationAt = DateTimeOffset.Now;
                                         renderedKey = null;
                                         until = DateTimeOffset.UtcNow;
                                         break;
-                                    case ConsoleKey.Home:
-                                        scrollOffset = 0;
+                                    case TodoListKeyAction.ToggleExpanded:
+                                        if (focusedTodoId is not null)
+                                        {
+                                            expandedTodoId = string.Equals(expandedTodoId, focusedTodoId, StringComparison.Ordinal)
+                                                ? null
+                                                : focusedTodoId;
+                                            renderedKey = null;
+                                            until = DateTimeOffset.UtcNow;
+                                        }
+                                        break;
+                                    case TodoListKeyAction.PageNext:
+                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, visibleTodoCount);
+                                        lastFocusNavigationAt = DateTimeOffset.Now;
                                         renderedKey = null;
                                         until = DateTimeOffset.UtcNow;
                                         break;
-                                    case ConsoleKey.End:
-                                        scrollOffset = maxScrollOffset;
+                                    case TodoListKeyAction.PagePrevious:
+                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -visibleTodoCount);
+                                        lastFocusNavigationAt = DateTimeOffset.Now;
+                                        renderedKey = null;
+                                        until = DateTimeOffset.UtcNow;
+                                        break;
+                                    case TodoListKeyAction.FocusFirst:
+                                        focusedTodoId = snapshot.Todos.FirstOrDefault()?.Id;
+                                        lastFocusNavigationAt = DateTimeOffset.Now;
+                                        renderedKey = null;
+                                        until = DateTimeOffset.UtcNow;
+                                        break;
+                                    case TodoListKeyAction.FocusLast:
+                                        focusedTodoId = snapshot.Todos.LastOrDefault()?.Id;
+                                        lastFocusNavigationAt = DateTimeOffset.Now;
                                         renderedKey = null;
                                         until = DateTimeOffset.UtcNow;
                                         break;
@@ -170,16 +204,29 @@ public sealed class TerminalViewer
         DiscoveredSession session,
         TodoSnapshot snapshot,
         DateTimeOffset now,
-        int scrollOffset)
+        int scrollOffset,
+        TodoListDisplayState displayState)
     {
         var terminalSize = TerminalSize.GetCurrent();
-        return TerminalRenderer.BuildTodoListView(session, snapshot, now, terminalSize.Width, terminalSize.Height, scrollOffset);
+        return TerminalRenderer.BuildTodoListView(session, snapshot, now, terminalSize.Width, terminalSize.Height, scrollOffset, displayState: displayState);
     }
 
     private static IRenderable BuildLoadingView(DiscoveredSession session, int spinnerFrame)
     {
         var terminalSize = TerminalSize.GetCurrent();
         return TerminalRenderer.BuildLoadingView(session, spinnerFrame, terminalSize.Width);
+    }
+
+    public static TodoListDisplayState CreateDisplayState(
+        string? focusedTodoId,
+        string? expandedTodoId,
+        DateTimeOffset? lastFocusNavigationAt,
+        DateTimeOffset now,
+        TimeSpan focusMarkerTimeout)
+    {
+        var showFocusMarker = expandedTodoId is not null
+            || lastFocusNavigationAt is not null && now - lastFocusNavigationAt.Value <= focusMarkerTimeout;
+        return new TodoListDisplayState(focusedTodoId, expandedTodoId, showFocusMarker);
     }
 
     private static DiscoveredSession? PromptForSession(IReadOnlyList<DiscoveredSession> sessions, CancellationToken cancellationToken)
@@ -228,49 +275,43 @@ public sealed class TerminalViewer
                 shouldRender = false;
             }
 
-            if (!Console.KeyAvailable)
+            if (!TerminalKeyboard.TryReadKey(out var key))
             {
                 cancellationToken.WaitHandle.WaitOne(TimeSpan.FromMilliseconds(50));
                 continue;
             }
 
-            var key = Console.ReadKey(intercept: true);
-            if (key.Key == ConsoleKey.Enter && filteredSessions.Count > 0)
+            switch (TerminalKeyboard.MapSessionSelectionKey(key))
             {
-                return filteredSessions[selectedIndex];
-            }
-
-            switch (key.Key)
-            {
-                case ConsoleKey.Q:
+                case SessionSelectionKeyAction.Accept when filteredSessions.Count > 0:
+                    return filteredSessions[selectedIndex];
+                case SessionSelectionKeyAction.Quit:
                     return null;
-                case ConsoleKey.UpArrow:
-                case ConsoleKey.K:
+                case SessionSelectionKeyAction.Previous:
                     selectedIndex = Math.Max(0, selectedIndex - 1);
                     shouldRender = true;
                     break;
-                case ConsoleKey.DownArrow:
-                case ConsoleKey.J:
+                case SessionSelectionKeyAction.Next:
                     selectedIndex = Math.Min(Math.Max(0, filteredSessions.Count - 1), selectedIndex + 1);
                     shouldRender = true;
                     break;
-                case ConsoleKey.PageUp:
+                case SessionSelectionKeyAction.PagePrevious:
                     selectedIndex = Math.Max(0, selectedIndex - visibleItemCount);
                     shouldRender = true;
                     break;
-                case ConsoleKey.PageDown:
+                case SessionSelectionKeyAction.PageNext:
                     selectedIndex = Math.Min(Math.Max(0, filteredSessions.Count - 1), selectedIndex + visibleItemCount);
                     shouldRender = true;
                     break;
-                case ConsoleKey.Home:
+                case SessionSelectionKeyAction.First:
                     selectedIndex = 0;
                     shouldRender = true;
                     break;
-                case ConsoleKey.End:
+                case SessionSelectionKeyAction.Last:
                     selectedIndex = Math.Max(0, filteredSessions.Count - 1);
                     shouldRender = true;
                     break;
-                case ConsoleKey.Backspace:
+                case SessionSelectionKeyAction.Backspace:
                     if (filter.Length > 0)
                     {
                         filter = filter[..^1];
@@ -279,18 +320,15 @@ public sealed class TerminalViewer
                         shouldRender = true;
                     }
                     break;
-                case ConsoleKey.U when key.Modifiers.HasFlag(ConsoleModifiers.Control):
+                case SessionSelectionKeyAction.ToggleSessionIds:
                     showSessionIds = !showSessionIds;
                     shouldRender = true;
                     break;
-                default:
-                    if (!char.IsControl(key.KeyChar))
-                    {
-                        filter += key.KeyChar;
-                        selectedIndex = 0;
-                        scrollOffset = 0;
-                        shouldRender = true;
-                    }
+                case SessionSelectionKeyAction.AppendFilter:
+                    filter += key.KeyChar;
+                    selectedIndex = 0;
+                    scrollOffset = 0;
+                    shouldRender = true;
                     break;
             }
         }
@@ -417,12 +455,51 @@ public sealed class TerminalViewer
             TerminalRenderer.HasDisplayedTimestamps(snapshot) ? now.ToUnixTimeSeconds() / 60 : "",
             TerminalRenderer.CreateTimestampKey(snapshot, now));
 
+    public static string CreateRenderKey(TodoSnapshot snapshot, DateTimeOffset now, TodoListDisplayState displayState) =>
+        string.Join(
+            '\u001f',
+            CreateRenderKey(snapshot, now),
+            displayState.FocusedTodoId ?? "",
+            displayState.ExpandedTodoId ?? "",
+            displayState.ShowFocusMarker);
+
     public static string CreateRenderKey(TodoSnapshot snapshot, DateTimeOffset now, TerminalSize terminalSize) =>
         string.Join(
             '\u001f',
             CreateRenderKey(snapshot, now),
             terminalSize.Width,
             terminalSize.Height);
+
+    public static string? SelectDefaultFocusedTodoId(IReadOnlyList<TodoItem> todos, string? currentFocusedTodoId)
+    {
+        if (currentFocusedTodoId is not null && todos.Any(todo => todo.Id == currentFocusedTodoId))
+        {
+            return currentFocusedTodoId;
+        }
+
+        return todos.FirstOrDefault(todo => todo.Status == "in_progress")?.Id
+            ?? todos.FirstOrDefault(todo => todo.Status == "pending")?.Id
+            ?? todos.FirstOrDefault()?.Id;
+    }
+
+    public static string? MoveFocusedTodoId(IReadOnlyList<TodoItem> todos, string? currentFocusedTodoId, int delta)
+    {
+        if (todos.Count == 0)
+        {
+            return null;
+        }
+
+        var currentIndex = currentFocusedTodoId is null
+            ? 0
+            : todos.ToList().FindIndex(todo => todo.Id == currentFocusedTodoId);
+        if (currentIndex < 0)
+        {
+            currentIndex = 0;
+        }
+
+        var nextIndex = Math.Clamp(currentIndex + delta, 0, todos.Count - 1);
+        return todos[nextIndex].Id;
+    }
 
     public static bool ShouldRender(string? renderedKey, string candidateKey, bool resizeRequested) =>
         resizeRequested || !StringComparer.Ordinal.Equals(renderedKey, candidateKey);
@@ -648,6 +725,10 @@ public sealed class TerminalViewer
                 return new TerminalSize(Console.WindowWidth, Console.WindowHeight);
             }
             catch (IOException)
+            {
+                return new TerminalSize(100, 40);
+            }
+            catch (InvalidOperationException)
             {
                 return new TerminalSize(100, 40);
             }

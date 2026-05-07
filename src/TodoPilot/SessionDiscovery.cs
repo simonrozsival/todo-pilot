@@ -23,7 +23,7 @@ public sealed class SessionDiscovery
         var metadata = _metadataReader.ReadAll();
         var sessions = new List<DiscoveredSession>();
 
-        foreach (var file in Directory.EnumerateFiles(_paths.RegistrySessionsDirectory, "*.json"))
+        foreach (var file in EnumerateRegistryFiles(_paths.RegistrySessionsDirectory))
         {
             SessionRegistryEntry? entry;
             try
@@ -36,6 +36,10 @@ public sealed class SessionDiscovery
                 continue;
             }
             catch (IOException)
+            {
+                continue;
+            }
+            catch (UnauthorizedAccessException)
             {
                 continue;
             }
@@ -61,4 +65,20 @@ public sealed class SessionDiscovery
 
     private static DateTimeOffset? ParseDate(string value) =>
         DateTimeOffset.TryParse(value, out var parsed) ? parsed : null;
+
+    private static IEnumerable<string> EnumerateRegistryFiles(string directory)
+    {
+        try
+        {
+            return Directory.EnumerateFiles(directory, "*.json").ToArray();
+        }
+        catch (IOException)
+        {
+            return [];
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return [];
+        }
+    }
 }

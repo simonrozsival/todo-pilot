@@ -31,6 +31,24 @@ dotnet build --no-restore
 dotnet test --no-build
 ```
 
+## Cross-platform validation
+
+The sidebar is intended to run on macOS, Linux, and Windows terminals. Before release, validate at least:
+
+| Area | macOS/Linux | Windows |
+| --- | --- | --- |
+| Live view | Alternate screen opens/restores, cursor is visible after `q` and Ctrl+C | ANSI-capable terminals open/restores; redirected output does not print raw escape setup |
+| Resize | Window resize rewraps TODO and session-selection rows | Polling fallback detects width/height changes and rewraps rows |
+| Input | `q`, Ctrl+C, arrows, `j`/`k`, PgUp/PgDn, Home/End, Enter, Space, Backspace, Ctrl+U; Escape does not quit | Same key behavior in Windows Terminal/PowerShell |
+| Paths | `~/.copilot`, `.github/extensions`, and repo-root discovery work with Unix paths | `%USERPROFILE%\.copilot`, project extensions, and case-insensitive path comparisons work |
+| SQLite | Missing DB/table is a quiet empty state; optional schema drift is ignored | Same behavior while Copilot is concurrently writing session data |
+
+Automated coverage should include the normal test command on each supported runner:
+
+```bash
+dotnet test --no-restore --verbosity quiet
+```
+
 The package set contains:
 
 - a root `todo-pilot` package that maps every supported RID;

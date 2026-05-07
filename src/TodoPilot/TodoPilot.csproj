@@ -10,7 +10,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>todo-pilot</ToolCommandName>
     <PackageId>todo-pilot</PackageId>
-    <Version>0.1.2</Version>
+    <Version>0.1.3</Version>
     <Authors>Simon Rozsival</Authors>
     <Description>Terminal TODO list viewer for GitHub Copilot CLI sessions.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
