@@ -71,7 +71,10 @@ public sealed record TodoItem(
     string? Description,
     string? CreatedAt,
     string? UpdatedAt,
-    IReadOnlyList<string> Dependencies);
+    IReadOnlyList<string> Dependencies)
+{
+    public IReadOnlyList<string> BlockedBy { get; init; } = [];
+}
 
 public sealed record TodoSnapshot(
     TodoReadState State,
@@ -79,11 +82,13 @@ public sealed record TodoSnapshot(
     string DataHash,
     string Message)
 {
-    public static TodoSnapshot MissingDatabase(string path) =>
-        new(TodoReadState.MissingDatabase, [], "", $"Session database not found: {path}");
+    public const string EmptyMessage = "No TODOs in this session yet.";
+
+    public static TodoSnapshot MissingDatabase(string _) =>
+        new(TodoReadState.MissingDatabase, [], "", EmptyMessage);
 
     public static TodoSnapshot MissingTodosTable() =>
-        new(TodoReadState.MissingTodosTable, [], "", "No todos table exists in this session yet.");
+        new(TodoReadState.MissingTodosTable, [], "", EmptyMessage);
 
     public static TodoSnapshot Error(string message) =>
         new(TodoReadState.Error, [], "", message);

@@ -1,6 +1,7 @@
 using Spectre.Console;
 using Spectre.Console.Rendering;
 using System.Globalization;
+using System.Text;
 
 namespace TodoPilot;
 
@@ -10,6 +11,8 @@ public static class TerminalRenderer
     private const int MinimumContentWidth = 24;
     private const int DefaultContentWidth = 100;
     private const string ContinuationIndent = "    ";
+    private const string TimestampStyle = "grey";
+    private const string MutedTodoStyle = "dim";
     private static readonly TimeSpan FreshCompletionWindow = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan TodoBatchWindow = TimeSpan.FromSeconds(5);
     private static readonly string[] LoadingSpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -37,27 +40,21 @@ public static class TerminalRenderer
         var contentWidth = GetContentWidth(consoleWidth);
         var headerRows = BuildHeaderRows(session, contentWidth);
         var bodyRows = BuildBodyRows(snapshot, renderedAt, contentWidth);
-        var initialFooterRows = BuildFooterRows(contentWidth, scroll: null);
-        var scroll = CalculateScrollMetrics(bodyRows.Count, headerRows.Count, initialFooterRows.Count, consoleHeight, scrollOffset);
-        var visibleBodyRows = BuildVisibleBodyRows(bodyRows, scroll);
-        var visibleTodoCount = visibleBodyRows
-            .Select(row => row.TodoId)
-            .Where(id => id is not null)
-            .Distinct(StringComparer.Ordinal)
-            .Count();
-        var footerRows = BuildFooterRows(contentWidth, scroll);
-        var rows = new List<IRenderable>(headerRows.Count + scroll.PageSize + footerRows.Count);
-        rows.AddRange(headerRows);
-        rows.AddRange(visibleBodyRows.Select(row => row.Renderable));
-        rows.AddRange(footerRows);
+        var content = BuildListLayoutContent(
+            headerRows,
+            bodyRows,
+            scroll => BuildFooterRows(contentWidth, scroll),
+            consoleHeight,
+            scrollOffset,
+            totalItemCount: snapshot.Todos.Count);
 
         return new TodoListView(
-            new Rows(rows),
-            scroll,
-            visibleTodoCount,
-            snapshot.Todos.Count,
-            HasMoreAbove: scroll.Offset > 0,
-            HasMoreBelow: scroll.Offset < scroll.MaxOffset);
+            ToRows(content.Lines),
+            content.Scroll,
+            content.VisibleItemCount,
+            content.TotalItemCount,
+            content.HasMoreAbove,
+            content.HasMoreBelow);
     }
 
     public static IRenderable BuildLoadingView(DiscoveredSession session, int spinnerFrame, int? consoleWidth = null)
@@ -65,9 +62,9 @@ public static class TerminalRenderer
         var contentWidth = GetContentWidth(consoleWidth);
         var rows = BuildHeaderRows(session, contentWidth);
         AddWrappedMarkup(rows, $"{GetLoadingSpinnerFrame(spinnerFrame)} Loading TODOs...", contentWidth, "yellow");
-        rows.Add(Text.Empty);
-        AddWrappedMarkup(rows, "Reading the session database. This can take a moment for large or busy sessions.", contentWidth, "grey");
-        return new Rows(rows);
+        rows.Add("");
+        AddWrappedMarkup(rows, "Reading the session database. This can take a moment for large or busy sessions.", contentWidth, TimestampStyle);
+        return ToRows(rows);
     }
 
     public static string GetLoadingSpinnerFrame(int spinnerFrame)
@@ -91,49 +88,85 @@ public static class TerminalRenderer
         return new ScrollMetrics(offset, maxOffset, pageSize, bodyLineCount);
     }
 
-    private static List<IRenderable> BuildHeaderRows(DiscoveredSession session, int contentWidth)
+    public static ListLayoutContent BuildListLayoutContent(
+        IReadOnlyList<string> headerRows,
+        IReadOnlyList<ListLine> bodyRows,
+        Func<ScrollMetrics?, IReadOnlyList<string>> buildFooterRows,
+        int? consoleHeight,
+        int scrollOffset,
+        int totalItemCount,
+        string? focusedItemId = null)
     {
-        var rows = new List<IRenderable>();
-        rows.Add(Text.Empty);
+        var initialFooterRows = buildFooterRows(null);
+        var scroll = CalculateScrollMetrics(bodyRows.Count, headerRows.Count, initialFooterRows.Count, consoleHeight, scrollOffset);
+        if (focusedItemId is not null && !VisibleRowsContain(BuildVisibleBodyRows(bodyRows, scroll), focusedItemId))
+        {
+            var focusedLineIndex = FirstLineIndexOf(bodyRows, focusedItemId);
+            if (focusedLineIndex >= 0)
+            {
+                scroll = CalculateScrollMetrics(bodyRows.Count, headerRows.Count, initialFooterRows.Count, consoleHeight, focusedLineIndex);
+            }
+        }
+
+        var visibleBodyRows = BuildVisibleBodyRows(bodyRows, scroll);
+        var visibleItemCount = visibleBodyRows
+            .Select(row => row.ItemId)
+            .Where(id => id is not null)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
+        var footerRows = buildFooterRows(scroll);
+        var rows = new List<string>(headerRows.Count + scroll.PageSize + footerRows.Count);
+        rows.AddRange(headerRows);
+        rows.AddRange(visibleBodyRows.Select(row => row.Markup));
+        rows.AddRange(footerRows);
+
+        return new ListLayoutContent(
+            rows,
+            scroll,
+            visibleItemCount,
+            totalItemCount,
+            HasMoreAbove: scroll.Offset > 0,
+            HasMoreBelow: scroll.Offset < scroll.MaxOffset);
+    }
+
+    private static List<string> BuildHeaderRows(DiscoveredSession session, int contentWidth)
+    {
+        var rows = new List<string>();
+        rows.Add("");
         AddWrappedMarkup(rows, $"# TODOs for \"{GetSessionName(session)}\"", contentWidth, "bold");
         foreach (var line in FormatCwdLines(session, contentWidth))
         {
-            rows.Add(new Markup($"{Padding()}{line}"));
+            rows.Add($"{Padding()}{line}");
         }
 
-        rows.Add(Text.Empty);
+        rows.Add("");
         return rows;
     }
 
-    private static List<BodyRow> BuildBodyRows(
+    private static List<ListLine> BuildBodyRows(
         TodoSnapshot snapshot,
         DateTimeOffset renderedAt,
         int contentWidth)
     {
-        var rows = new List<BodyRow>();
+        var rows = new List<ListLine>();
         if (snapshot.State != TodoReadState.Available)
         {
-            var color = snapshot.State == TodoReadState.Error ? "red" : "yellow";
+            var color = snapshot.State == TodoReadState.Error ? "red" : TimestampStyle;
             AddWrappedBodyMarkup(rows, snapshot.Message, contentWidth, color, todoId: null);
             return rows;
         }
 
         if (snapshot.Todos.Count == 0)
         {
-            AddWrappedBodyMarkup(rows, "No TODOs in this session.", contentWidth, "grey", todoId: null);
+            AddWrappedBodyMarkup(rows, TodoSnapshot.EmptyMessage, contentWidth, TimestampStyle, todoId: null);
         }
         else
         {
-            var batches = CreateTodoBatches(snapshot.Todos);
-            for (var batchIndex = 0; batchIndex < batches.Count; batchIndex++)
+            foreach (var todo in snapshot.Todos)
             {
-                var muteCompletedTodos = batchIndex > 0;
-                foreach (var todo in batches[batchIndex])
+                foreach (var line in FormatTodoLines(todo, renderedAt, contentWidth))
                 {
-                    foreach (var line in FormatTodoLines(todo, renderedAt, contentWidth, muteCompletedTodos))
-                    {
-                        rows.Add(new BodyRow(new Markup($"{Padding()}{line}"), todo.Id));
-                    }
+                    rows.Add(new ListLine($"{Padding()}{line}", todo.Id));
                 }
             }
         }
@@ -141,7 +174,7 @@ public static class TerminalRenderer
         return rows;
     }
 
-    private static BodyRow[] BuildVisibleBodyRows(IReadOnlyList<BodyRow> bodyRows, ScrollMetrics scroll)
+    private static ListLine[] BuildVisibleBodyRows(IReadOnlyList<ListLine> bodyRows, ScrollMetrics scroll)
     {
         var hasMoreAbove = scroll.Offset > 0;
         var hasMoreBelow = scroll.Offset < scroll.MaxOffset;
@@ -160,11 +193,11 @@ public static class TerminalRenderer
 
         var markerCount = (showAboveMarker ? 1 : 0) + (showBelowMarker ? 1 : 0);
         var contentCapacity = Math.Max(1, scroll.PageSize - markerCount);
-        var start = showBelowMarker
+        var start = hasMoreBelow
             ? scroll.Offset
             : Math.Max(0, bodyRows.Count - contentCapacity);
 
-        var rows = new List<BodyRow>(scroll.PageSize);
+        var rows = new List<ListLine>(scroll.PageSize);
         if (showAboveMarker)
         {
             rows.Add(CreateScrollHint("⋯ more above (PgUp)"));
@@ -180,18 +213,18 @@ public static class TerminalRenderer
         return rows.ToArray();
     }
 
-    private static BodyRow CreateScrollHint(string text) =>
-        new(new Markup($"{Padding()}[grey]{Markup.Escape(text)}[/]"), TodoId: null);
+    private static ListLine CreateScrollHint(string text) =>
+        new($"{Padding()}[{TimestampStyle}]{Markup.Escape(text)}[/]", ItemId: null);
 
-    private static List<IRenderable> BuildFooterRows(int contentWidth, ScrollMetrics? scroll)
+    private static List<string> BuildFooterRows(int contentWidth, ScrollMetrics? scroll)
     {
-        var rows = new List<IRenderable>();
-        rows.Add(Text.Empty);
+        var rows = new List<string>();
+        rows.Add("");
         var text = scroll is { CanScroll: true } scrollMetrics
             ? $"{FormatFooterStatus(scrollMetrics)} · r refresh · q quit"
             : "r refresh · q quit";
-        AddWrappedMarkup(rows, text, contentWidth, "grey");
-        rows.Add(Text.Empty);
+        AddWrappedMarkup(rows, text, contentWidth, TimestampStyle);
+        rows.Add("");
         return rows;
     }
 
@@ -239,7 +272,7 @@ public static class TerminalRenderer
         }
 
         return WrapText(AbbreviateHomePath(cwd.Trim()), contentWidth, contentWidth)
-            .Select(line => $"[grey]{Markup.Escape(line)}[/]")
+            .Select(line => $"[{TimestampStyle}]{Markup.Escape(line)}[/]")
             .ToArray();
     }
 
@@ -351,9 +384,9 @@ public static class TerminalRenderer
 
     private static IReadOnlyList<string> FormatCompletedTodoLines(TodoItem todo, DateTimeOffset now, int contentWidth, bool muted)
     {
-        var style = muted
-            ? "grey"
-            : IsFreshTimestamp(todo.UpdatedAt, now) ? "bold green" : "green";
+        var style = !muted && IsFreshTimestamp(todo.UpdatedAt, now)
+            ? "bold green"
+            : MutedTodoStyle;
         var lines = FormatStyledTodoLines("[✓]", todo.Title, contentWidth, style).ToList();
         return AppendGraySuffix(lines, FormatDoneTimestamp(todo.UpdatedAt, now), contentWidth);
     }
@@ -383,15 +416,19 @@ public static class TerminalRenderer
             return lines;
         }
 
-        var escapedSuffix = $"[grey]{Markup.Escape(suffix)}[/]";
         var lastLinePlain = RemoveMarkupForLength(lines[^1]);
         if (DisplayLength(lastLinePlain) + 1 + suffix.Length <= contentWidth)
         {
+            var escapedSuffix = $"[{TimestampStyle}]{Markup.Escape(suffix)}[/]";
             lines[^1] = $"{lines[^1]} {escapedSuffix}";
         }
         else
         {
-            lines.Add($"{ContinuationIndent}{escapedSuffix}");
+            var suffixWidth = Math.Max(1, contentWidth - DisplayLength(ContinuationIndent));
+            foreach (var line in WrapText(suffix, suffixWidth, suffixWidth))
+            {
+                lines.Add($"{ContinuationIndent}[{TimestampStyle}]{Markup.Escape(line)}[/]");
+            }
         }
 
         return lines;
@@ -548,7 +585,7 @@ public static class TerminalRenderer
         return lines;
     }
 
-    private static IReadOnlyList<string> WrapText(string text, int firstWidth, int continuationWidth)
+    public static IReadOnlyList<string> WrapText(string text, int firstWidth, int continuationWidth)
     {
         if (string.IsNullOrEmpty(text))
         {
@@ -589,23 +626,23 @@ public static class TerminalRenderer
         return max;
     }
 
-    private static void AddWrappedMarkup(List<IRenderable> rows, string text, int contentWidth, string style)
+    private static void AddWrappedMarkup(List<string> rows, string text, int contentWidth, string style)
     {
         foreach (var line in WrapText(text, contentWidth, contentWidth))
         {
-            rows.Add(new Markup($"{Padding()}[{style}]{Markup.Escape(line)}[/]"));
+            rows.Add($"{Padding()}[{style}]{Markup.Escape(line)}[/]");
         }
     }
 
-    private static void AddWrappedBodyMarkup(List<BodyRow> rows, string text, int contentWidth, string style, string? todoId)
+    private static void AddWrappedBodyMarkup(List<ListLine> rows, string text, int contentWidth, string style, string? todoId)
     {
         foreach (var line in WrapText(text, contentWidth, contentWidth))
         {
-            rows.Add(new BodyRow(new Markup($"{Padding()}[{style}]{Markup.Escape(line)}[/]"), todoId));
+            rows.Add(new ListLine($"{Padding()}[{style}]{Markup.Escape(line)}[/]", todoId));
         }
     }
 
-    private static int GetContentWidth(int? consoleWidth)
+    public static int GetContentWidth(int? consoleWidth)
     {
         var width = consoleWidth ?? GetConsoleWidth();
         return Math.Max(MinimumContentWidth, width - HorizontalPadding * 2);
@@ -623,7 +660,7 @@ public static class TerminalRenderer
         }
     }
 
-    private static string Padding() => new(' ', HorizontalPadding);
+    public static string Padding() => new(' ', HorizontalPadding);
 
     private static int DisplayLength(string text) => text.Length;
 
@@ -635,21 +672,70 @@ public static class TerminalRenderer
 
     private static string RemoveMarkupForLength(string markup)
     {
-        return markup
-            .Replace("[green]", "", StringComparison.Ordinal)
-            .Replace("[bold green]", "", StringComparison.Ordinal)
-            .Replace("[yellow]", "", StringComparison.Ordinal)
-            .Replace("[red]", "", StringComparison.Ordinal)
-            .Replace("[grey]", "", StringComparison.Ordinal)
-            .Replace("[/]", "", StringComparison.Ordinal)
-            .Replace("[[", "[", StringComparison.Ordinal)
-            .Replace("]]", "]", StringComparison.Ordinal);
+        var builder = new StringBuilder(markup.Length);
+        for (var i = 0; i < markup.Length;)
+        {
+            if (markup[i] == '[')
+            {
+                if (i + 1 < markup.Length && markup[i + 1] == '[')
+                {
+                    builder.Append('[');
+                    i += 2;
+                    continue;
+                }
+
+                var tagEnd = markup.IndexOf(']', i + 1);
+                if (tagEnd >= 0)
+                {
+                    i = tagEnd + 1;
+                    continue;
+                }
+            }
+            else if (markup[i] == ']' && i + 1 < markup.Length && markup[i + 1] == ']')
+            {
+                builder.Append(']');
+                i += 2;
+                continue;
+            }
+
+            builder.Append(markup[i]);
+            i++;
+        }
+
+        return builder.ToString();
     }
 
     private static string? FirstNonEmpty(params string?[] values) =>
         values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
 
-    private sealed record BodyRow(IRenderable Renderable, string? TodoId);
+    private static bool VisibleRowsContain(IReadOnlyList<ListLine> rows, string itemId) =>
+        rows.Any(row => string.Equals(row.ItemId, itemId, StringComparison.Ordinal));
+
+    private static int FirstLineIndexOf(IReadOnlyList<ListLine> rows, string itemId)
+    {
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (string.Equals(rows[i].ItemId, itemId, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    public static Rows ToRows(IEnumerable<string> lines) =>
+        new(lines.Select<string, IRenderable>(line => string.IsNullOrEmpty(line) ? Text.Empty : new Markup(line)));
+
+    public sealed record ListLine(string Markup, string? ItemId);
+
+    public sealed record ListLayoutContent(
+        IReadOnlyList<string> Lines,
+        ScrollMetrics Scroll,
+        int VisibleItemCount,
+        int TotalItemCount,
+        bool HasMoreAbove,
+        bool HasMoreBelow);
 
     public sealed record TodoListView(
         IRenderable Renderable,

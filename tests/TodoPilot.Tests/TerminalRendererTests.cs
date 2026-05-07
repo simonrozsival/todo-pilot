@@ -38,7 +38,7 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
-    public void FormatTodoLine_AppendsGrayCompletedTimestampOutsideGreenText()
+    public void FormatTodoLine_AppendsGrayCompletedTimestampOutsideDimCompletedText()
     {
         const string updatedAt = "2026-05-06T12:49:00+02:00";
         var todo = new TodoItem(
@@ -53,8 +53,9 @@ public sealed class TerminalRendererTests
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"));
 
-        Assert.Contains("[green]", line, StringComparison.Ordinal);
+        Assert.Contains("[dim]", line, StringComparison.Ordinal);
         Assert.Contains("[/]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey][[✓]]", line, StringComparison.Ordinal);
         Assert.Contains($"[grey]done 5m ago ⋅ {expectedTime}[/]", line, StringComparison.Ordinal);
         Assert.Matches($@"\[/\]\s\[grey\]done 5m ago ⋅ {expectedTime}\[/\]$", line);
     }
@@ -109,6 +110,7 @@ public sealed class TerminalRendererTests
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"));
 
+        Assert.Contains("[dim][[✓]] Completed todo[/]", line, StringComparison.Ordinal);
         Assert.DoesNotContain("[grey]", line, StringComparison.Ordinal);
     }
 
@@ -219,6 +221,50 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void FormatTodoLine_RendersDependencyBlockedPendingTodoAsRegularPending()
+    {
+        const string createdAt = "2026-05-06T13:30:00+02:00";
+        var todo = new TodoItem(
+            "pending",
+            "Dependent [todo]",
+            "pending",
+            Description: null,
+            CreatedAt: createdAt,
+            UpdatedAt: null,
+            Dependencies: ["z-dep", "a-dep"])
+        {
+            BlockedBy = ["z-dep", "a-dep"]
+        };
+
+        var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T13:42:00+02:00"));
+
+        Assert.StartsWith("[[ ]] Dependent [[todo]]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[dim]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[[-]]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("blocked", line, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains($"[grey]added 12m ago ⋅ {LocalClock(createdAt)}[/]", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatTodoLine_RendersPendingTodoWithSatisfiedDependenciesAsRegularPending()
+    {
+        var todo = new TodoItem(
+            "pending",
+            "Ready todo",
+            "pending",
+            Description: null,
+            CreatedAt: null,
+            UpdatedAt: null,
+            Dependencies: ["done-dep"]);
+
+        var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T13:42:00+02:00"));
+
+        Assert.StartsWith("[[ ]] Ready todo", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("blocked by", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[dim]", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FormatTodoLine_UsesCreatedAtForBlockedAddedTimestamp()
     {
         const string createdAt = "2026-05-06T13:30:00+02:00";
@@ -271,7 +317,7 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
-    public void FormatTodoLines_RendersMutedCompletedTodoInGray()
+    public void FormatTodoLines_RendersMutedCompletedTodoInDimSeparateFromGrayTimestamp()
     {
         const string updatedAt = "2026-05-06T13:30:00+02:00";
         var todo = new TodoItem(
@@ -290,9 +336,10 @@ public sealed class TerminalRendererTests
             muteCompletedTodo: true);
 
         var line = Assert.Single(lines);
-        Assert.StartsWith("[grey][[✓]] Older completed todo[/]", line, StringComparison.Ordinal);
+        Assert.StartsWith("[dim][[✓]] Older completed todo[/]", line, StringComparison.Ordinal);
         Assert.DoesNotContain("[green]", line, StringComparison.Ordinal);
         Assert.DoesNotContain("[bold green]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey][[✓]]", line, StringComparison.Ordinal);
         Assert.Contains($"[grey]done 12m ago ⋅ {LocalClock(updatedAt)}[/]", line, StringComparison.Ordinal);
     }
 
@@ -320,6 +367,26 @@ public sealed class TerminalRendererTests
         Assert.Equal(3, view.Scroll.TotalLines);
         Assert.Equal(3, view.VisibleTodoCount);
         Assert.Equal(3, view.TotalTodoCount);
+    }
+
+    [Fact]
+    public void BuildTodoListView_TreatsMissingDatabaseAsQuietEmptyState()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = TodoSnapshot.MissingDatabase("/tmp/session.db");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-06T14:02:00+02:00"),
+            consoleWidth: 80,
+            consoleHeight: 20);
+
+        Assert.Equal(1, view.Scroll.TotalLines);
+        Assert.Equal(0, view.VisibleTodoCount);
+        Assert.Equal(0, view.TotalTodoCount);
+        Assert.Equal(TodoSnapshot.EmptyMessage, snapshot.Message);
+        Assert.DoesNotContain("/tmp/session.db", snapshot.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -605,6 +672,23 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void ShouldRenderSessionSelection_ReturnsTrueForResizeOrSizeChange()
+    {
+        var renderedSize = new TerminalViewer.TerminalSize(80, 24);
+
+        Assert.True(TerminalViewer.ShouldRenderSessionSelection(renderedSize, renderedSize, stateChanged: false, resizeRequested: true));
+        Assert.True(TerminalViewer.ShouldRenderSessionSelection(renderedSize, new TerminalViewer.TerminalSize(100, 24), stateChanged: false, resizeRequested: false));
+        Assert.False(TerminalViewer.ShouldRenderSessionSelection(renderedSize, renderedSize, stateChanged: false, resizeRequested: false));
+    }
+
+    [Fact]
+    public void IsQuitKey_OnlyTreatsQAsKeyboardQuit()
+    {
+        Assert.True(TerminalViewer.IsQuitKey(new ConsoleKeyInfo('q', ConsoleKey.Q, shift: false, alt: false, control: false)));
+        Assert.False(TerminalViewer.IsQuitKey(new ConsoleKeyInfo('\u001b', ConsoleKey.Escape, shift: false, alt: false, control: false)));
+    }
+
+    [Fact]
     public void FormatSessionChoice_EscapesSessionIdAndNameForMarkupRendering()
     {
         const string sessionId = "ff8d2dee-053b-401d-a01c-9ddd5672bb8f";
@@ -628,6 +712,302 @@ public sealed class TerminalRendererTests
         Assert.Equal("Session [[preview]] [[ff8d2dee-053b-401d-a01c-9ddd5672bb8f]] active", choice);
     }
 
+    [Fact]
+    public void FormatSessionSelectionChoice_RendersSelectedDotAndWrapsMetadata()
+    {
+        const string sessionId = "ff8d2dee-053b-401d-a01c-9ddd5672bb8f";
+        var session = new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = sessionId, LastSeen = "2026-05-06T12:49:00+02:00" },
+            IsStale: false,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                sessionId,
+                Cwd: null,
+                Repository: null,
+                Branch: null,
+                Summary: "Session [preview] with a very long name",
+                CreatedAt: null,
+                UpdatedAt: null));
+
+        var lines = TerminalViewer.FormatSessionSelectionChoiceLines(
+            session,
+            selected: true,
+            maxWidth: 40,
+            now: DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"),
+            showSessionId: true);
+        var exception = Record.Exception(() =>
+        {
+            foreach (var line in lines)
+            {
+                _ = new Spectre.Console.Markup(line);
+            }
+        });
+
+        Assert.Null(exception);
+        Assert.StartsWith("[blue][[•]] ", lines[0], StringComparison.Ordinal);
+        Assert.Contains("Session [[preview]]", lines[0], StringComparison.Ordinal);
+        Assert.DoesNotContain("[reverse]", string.Join('\n', lines), StringComparison.Ordinal);
+        Assert.DoesNotContain("...", string.Join('\n', lines), StringComparison.Ordinal);
+        Assert.Contains(lines, line => line.Contains("[grey]", StringComparison.Ordinal)
+            && line.Contains("ff8d2dee", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("last active", StringComparison.Ordinal));
+        Assert.Contains(lines, line => line.Contains("5m ago", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FormatSessionSelectionChoice_RendersUnselectedCheckboxAndEscapesMarkup()
+    {
+        const string sessionId = "ff8d2dee-053b-401d-a01c-9ddd5672bb8f";
+        var session = new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = sessionId },
+            IsStale: true,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                sessionId,
+                Cwd: null,
+                Repository: null,
+                Branch: null,
+                Summary: "Session [preview]",
+                CreatedAt: null,
+                UpdatedAt: null));
+
+        var lines = TerminalViewer.FormatSessionSelectionChoiceLines(
+            session,
+            selected: false,
+            maxWidth: 120,
+            now: DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"),
+            showSessionId: true);
+        var exception = Record.Exception(() =>
+        {
+            foreach (var line in lines)
+            {
+                _ = new Spectre.Console.Markup(line);
+            }
+        });
+
+        Assert.Null(exception);
+        Assert.StartsWith("[[ ]] Session [[preview]]", lines[0], StringComparison.Ordinal);
+        Assert.Contains(lines, line => line.Contains("[grey]", StringComparison.Ordinal)
+            && line.Contains("stale", StringComparison.Ordinal)
+            && line.Contains(sessionId, StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FormatSessionSelectionChoice_KeepsMetadataInlineWhenRowFits()
+    {
+        const string sessionId = "0e218750-5887-4aa1-8b15-01d55577457a";
+        var session = new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = sessionId, LastSeen = "2026-05-07T12:59:00+02:00" },
+            IsStale: false,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                sessionId,
+                Cwd: null,
+                Repository: null,
+                Branch: null,
+                Summary: "Todolist ordering",
+                CreatedAt: null,
+                UpdatedAt: null));
+
+        var lines = TerminalViewer.FormatSessionSelectionChoiceLines(
+            session,
+            selected: true,
+            maxWidth: 120,
+            now: DateTimeOffset.Parse("2026-05-07T12:59:30+02:00"),
+            showSessionId: true);
+
+        var line = Assert.Single(lines);
+        Assert.StartsWith("[blue][[•]] Todolist ordering[/] [grey][[0e218750-5887-4aa1-8b15-01d55577457a]]", line, StringComparison.Ordinal);
+        Assert.Contains("active · last active just now", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[reverse]", line, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FormatSessionSelectionChoice_HidesSessionUuidByDefault()
+    {
+        const string sessionId = "0e218750-5887-4aa1-8b15-01d55577457a";
+        var session = new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = sessionId, LastSeen = "2026-05-07T12:59:00+02:00" },
+            IsStale: false,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                sessionId,
+                Cwd: null,
+                Repository: null,
+                Branch: null,
+                Summary: "Todolist ordering",
+                CreatedAt: null,
+                UpdatedAt: null));
+
+        var lines = TerminalViewer.FormatSessionSelectionChoiceLines(
+            session,
+            selected: true,
+            maxWidth: 120,
+            now: DateTimeOffset.Parse("2026-05-07T12:59:30+02:00"));
+
+        var rendered = string.Join('\n', lines);
+        Assert.DoesNotContain(sessionId, rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]active · last active just now", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void FilterSessions_SearchesMetadataNotJustTrimmedDisplayText()
+    {
+        var first = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+        var second = CreateSessionWithMetadata(
+            sessionId: "22222222-2222-2222-2222-222222222222",
+            summary: "Second",
+            repository: "repo-two",
+            branch: "feature",
+            cwd: "/tmp/second");
+
+        var filtered = TerminalViewer.FilterSessions([first, second], "repo-two");
+
+        var session = Assert.Single(filtered);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", session.Registry.SessionId);
+    }
+
+    [Fact]
+    public void FilterSessions_SearchesHiddenSessionUuid()
+    {
+        var first = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+        var second = CreateSessionWithMetadata(
+            sessionId: "22222222-2222-2222-2222-222222222222",
+            summary: "Second",
+            repository: "repo-two",
+            branch: "feature",
+            cwd: "/tmp/second");
+
+        var filtered = TerminalViewer.FilterSessions([first, second], "22222222");
+
+        var session = Assert.Single(filtered);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", session.Registry.SessionId);
+    }
+
+    [Fact]
+    public void ClampSelectionScrollOffset_KeepsSelectedSessionVisible()
+    {
+        Assert.Equal(0, TerminalViewer.ClampSelectionScrollOffset(itemCount: 10, pageSize: 4, selectedIndex: 0, requestedOffset: 3));
+        Assert.Equal(2, TerminalViewer.ClampSelectionScrollOffset(itemCount: 10, pageSize: 4, selectedIndex: 5, requestedOffset: 0));
+        Assert.Equal(6, TerminalViewer.ClampSelectionScrollOffset(itemCount: 10, pageSize: 4, selectedIndex: 9, requestedOffset: 100));
+    }
+
+    [Fact]
+    public void BuildSessionSelectionContent_UsesSharedSpacingAndNoLeadingBlankLine()
+    {
+        var session = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+
+        var content = TerminalViewer.BuildSessionSelectionContent(
+            [session],
+            selectedIndex: 0,
+            scrollOffset: 0,
+            filter: "",
+            consoleWidth: 80,
+            consoleHeight: 8);
+
+        Assert.NotEmpty(content.Lines);
+        Assert.Equal("  [bold]# Choose a Copilot session[/]", content.Lines[0]);
+        Assert.Equal("  [grey]Type to filter by session name, repo, directory, UUID, or state[/]", content.Lines[1]);
+        Assert.Equal("", content.Lines[2]);
+        Assert.Contains("[blue][[•]]", content.Lines[3], StringComparison.Ordinal);
+        Assert.DoesNotContain("[reverse]", string.Join('\n', content.Lines), StringComparison.Ordinal);
+        Assert.StartsWith("  ", content.Lines[3], StringComparison.Ordinal);
+        Assert.Contains("ctrl+u show UUIDs", string.Join('\n', content.Lines), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("q quit", string.Join('\n', content.Lines), StringComparison.Ordinal);
+        Assert.DoesNotContain("11111111-1111-1111-1111-111111111111", string.Join('\n', content.Lines), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildSessionSelectionContent_ShowsUuidsWhenToggledOn()
+    {
+        const string sessionId = "11111111-1111-1111-1111-111111111111";
+        var session = CreateSessionWithMetadata(
+            sessionId: sessionId,
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+
+        var content = TerminalViewer.BuildSessionSelectionContent(
+            [session],
+            selectedIndex: 0,
+            scrollOffset: 0,
+            filter: "",
+            consoleWidth: 120,
+            consoleHeight: 8,
+            showSessionIds: true);
+
+        var rendered = string.Join('\n', content.Lines);
+        Assert.Contains(sessionId, rendered, StringComparison.Ordinal);
+        Assert.Contains("ctrl+u hide UUIDs", rendered, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildSessionSelectionContent_ShowsPagedFooterWhenScrollable()
+    {
+        var sessions = Enumerable.Range(1, 5)
+            .Select(i => CreateSessionWithMetadata(
+                sessionId: $"{i}{i}{i}{i}{i}{i}{i}{i}-{i}{i}{i}{i}-{i}{i}{i}{i}-{i}{i}{i}{i}-{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}",
+                summary: $"Session {i}",
+                repository: "repo",
+                branch: "main",
+                cwd: $"/tmp/{i}"))
+            .ToArray();
+
+        var content = TerminalViewer.BuildSessionSelectionContent(
+            sessions,
+            selectedIndex: 0,
+            scrollOffset: 0,
+            filter: "",
+            consoleWidth: 60,
+            consoleHeight: 7);
+
+        var rendered = string.Join('\n', content.Lines);
+        Assert.Contains("page 1/", rendered, StringComparison.Ordinal);
+        Assert.Contains("PgUp/PgDn scroll", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("esc quit", rendered, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildSessionSelectionContent_KeepsSelectedWrappedRowFirstLineVisible()
+    {
+        var sessions = Enumerable.Range(1, 4)
+            .Select(i => CreateSessionWithMetadata(
+                sessionId: $"{i}{i}{i}{i}{i}{i}{i}{i}-{i}{i}{i}{i}-{i}{i}{i}{i}-{i}{i}{i}{i}-{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}{i}",
+                summary: $"Session {i} with long title that wraps",
+                repository: "repo",
+                branch: "main",
+                cwd: $"/tmp/{i}"))
+            .ToArray();
+
+        var content = TerminalViewer.BuildSessionSelectionContent(
+            sessions,
+            selectedIndex: 3,
+            scrollOffset: 0,
+            filter: "",
+            consoleWidth: 36,
+            consoleHeight: 8);
+
+        Assert.Contains(content.Lines, line => line.Contains("[blue][[•]] Session 4", StringComparison.Ordinal));
+        Assert.DoesNotContain(content.Lines, line => line.Contains("[blue]    Session 4", StringComparison.Ordinal)
+            && !content.Lines.Any(candidate => candidate.Contains("[blue][[•]] Session 4", StringComparison.Ordinal)));
+    }
+
     private static DiscoveredSession CreateSession(string? metadataCwd, string? registryCwd)
     {
         const string sessionId = "11111111-1111-1111-1111-111111111111";
@@ -641,6 +1021,29 @@ public sealed class TerminalRendererTests
                 Repository: null,
                 Branch: null,
                 Summary: "Test Session",
+                CreatedAt: null,
+                UpdatedAt: null));
+    }
+
+    private static DiscoveredSession CreateSessionWithMetadata(
+        string sessionId,
+        string summary,
+        string repository,
+        string branch,
+        string cwd,
+        string? lastSeen = null,
+        bool isStale = false)
+    {
+        return new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = sessionId, Cwd = cwd, LastSeen = lastSeen ?? "" },
+            IsStale: isStale,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                sessionId,
+                Cwd: cwd,
+                Repository: repository,
+                Branch: branch,
+                Summary: summary,
                 CreatedAt: null,
                 UpdatedAt: null));
     }

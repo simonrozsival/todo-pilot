@@ -24,7 +24,7 @@ public sealed class TodoDatabaseReader
                 return TodoSnapshot.MissingTodosTable();
             }
 
-            var dependencies = SessionMetadataReader.TableExists(connection, "todo_deps")
+            var dependenciesByTodoId = SessionMetadataReader.TableExists(connection, "todo_deps")
                 ? ReadDependencies(connection)
                 : new Dictionary<string, List<string>>(StringComparer.Ordinal);
 
@@ -32,10 +32,9 @@ public sealed class TodoDatabaseReader
             command.CommandText = """
                 SELECT id, title, description, status, created_at, updated_at
                 FROM todos
-                ORDER BY created_at DESC, id DESC
                 """;
 
-            var todos = new List<TodoItem>();
+            var rows = new List<TodoRow>();
             using var reader = command.ExecuteReader();
             while (reader.Read())
             {
@@ -45,18 +44,46 @@ public sealed class TodoDatabaseReader
                     continue;
                 }
 
-                dependencies.TryGetValue(id, out var deps);
-                todos.Add(new TodoItem(
+                rows.Add(new TodoRow(
                     id,
                     GetString(reader, "title") ?? id,
                     GetString(reader, "status") ?? "pending",
                     GetString(reader, "description"),
                     GetString(reader, "created_at"),
-                    GetString(reader, "updated_at"),
-                    deps ?? []));
+                    GetString(reader, "updated_at")));
             }
 
-            return new TodoSnapshot(TodoReadState.Available, todos, ComputeHash(todos), $"{todos.Count} todo(s)");
+            var statusesByTodoId = rows.ToDictionary(row => row.Id, row => row.Status, StringComparer.Ordinal);
+            var todos = rows
+                .Select(row =>
+                {
+                    dependenciesByTodoId.TryGetValue(row.Id, out var rawDependencies);
+                    var dependencies = rawDependencies?
+                        .Distinct(StringComparer.Ordinal)
+                        .ToArray()
+                        ?? [];
+                    var blockedBy = dependencies
+                        .Where(dependency => !statusesByTodoId.TryGetValue(dependency, out var status) || status != "done")
+                        .Order(StringComparer.Ordinal)
+                        .ToArray();
+
+                    return new TodoItem(
+                        row.Id,
+                        row.Title,
+                        row.Status,
+                        row.Description,
+                        row.CreatedAt,
+                        row.UpdatedAt,
+                        dependencies)
+                    {
+                        BlockedBy = blockedBy
+                    };
+                })
+                .OrderBy(GetWorkflowRank)
+                .ThenByDescending(todo => todo.Id, StringComparer.Ordinal)
+                .ToArray();
+
+            return new TodoSnapshot(TodoReadState.Available, todos, ComputeHash(todos), $"{todos.Length} todo(s)");
         }
         catch (SqliteException ex)
         {
@@ -67,7 +94,7 @@ public sealed class TodoDatabaseReader
     private static Dictionary<string, List<string>> ReadDependencies(SqliteConnection connection)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT todo_id, depends_on FROM todo_deps";
+        command.CommandText = "SELECT todo_id, depends_on FROM todo_deps ORDER BY todo_id, depends_on";
         using var reader = command.ExecuteReader();
 
         var result = new Dictionary<string, List<string>>(StringComparer.Ordinal);
@@ -104,7 +131,8 @@ public sealed class TodoDatabaseReader
                 .Append(todo.Description).Append('\u001f')
                 .Append(todo.CreatedAt).Append('\u001f')
                 .Append(todo.UpdatedAt).Append('\u001f')
-                .AppendJoin(',', todo.Dependencies).Append('\u001e');
+                .AppendJoin(',', todo.Dependencies).Append('\u001f')
+                .AppendJoin(',', todo.BlockedBy).Append('\u001e');
         }
 
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
@@ -116,4 +144,24 @@ public sealed class TodoDatabaseReader
         var ordinal = reader.GetOrdinal(column);
         return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
     }
+
+    private static int GetWorkflowRank(TodoItem todo) =>
+        todo.Status switch
+        {
+            "in_progress" => 0,
+            "pending" when todo.BlockedBy.Count == 0 => 1,
+            "pending" => 2,
+            "blocked" => 3,
+            "done" => 4,
+            _ when todo.BlockedBy.Count == 0 => 1,
+            _ => 2
+        };
+
+    private sealed record TodoRow(
+        string Id,
+        string Title,
+        string Status,
+        string? Description,
+        string? CreatedAt,
+        string? UpdatedAt);
 }
