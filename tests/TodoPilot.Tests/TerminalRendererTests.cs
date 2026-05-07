@@ -604,6 +604,30 @@ public sealed class TerminalRendererTests
         Assert.False(TerminalViewer.ShouldRender(renderKey, renderKey, resizeRequested: false));
     }
 
+    [Fact]
+    public void FormatSessionChoice_EscapesSessionIdAndNameForMarkupRendering()
+    {
+        const string sessionId = "ff8d2dee-053b-401d-a01c-9ddd5672bb8f";
+        var session = new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = sessionId },
+            IsStale: false,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                sessionId,
+                Cwd: null,
+                Repository: null,
+                Branch: null,
+                Summary: "Session [preview]",
+                CreatedAt: null,
+                UpdatedAt: null));
+
+        var choice = TerminalViewer.FormatSessionChoice(session);
+        var exception = Record.Exception(() => new Spectre.Console.Markup(choice));
+
+        Assert.Null(exception);
+        Assert.Equal("Session [[preview]] [[ff8d2dee-053b-401d-a01c-9ddd5672bb8f]] active", choice);
+    }
+
     private static DiscoveredSession CreateSession(string? metadataCwd, string? registryCwd)
     {
         const string sessionId = "11111111-1111-1111-1111-111111111111";

@@ -213,6 +213,13 @@ public sealed class TerminalViewer
     public static bool ShouldRender(string? renderedKey, string candidateKey, bool resizeRequested) =>
         resizeRequested || !StringComparer.Ordinal.Equals(renderedKey, candidateKey);
 
+    public static string FormatSessionChoice(DiscoveredSession session)
+    {
+        var name = TerminalRenderer.GetSessionName(session);
+        var state = session.IsStale ? "stale" : "active";
+        return Markup.Escape($"{name} [{session.Registry.SessionId}] {state}");
+    }
+
     public readonly record struct TerminalSize(int Width, int Height)
     {
         public static TerminalSize GetCurrent()
@@ -228,18 +235,13 @@ public sealed class TerminalViewer
         }
     }
 
-    private sealed record SessionChoice(DiscoveredSession Session, string Name)
+    private sealed record SessionChoice(DiscoveredSession Session)
     {
-        public static SessionChoice From(DiscoveredSession session)
-        {
-            var name = TerminalRenderer.GetSessionName(session);
-            return new SessionChoice(session, name);
-        }
+        public static SessionChoice From(DiscoveredSession session) => new(session);
 
         public override string ToString()
         {
-            var state = Session.IsStale ? "stale" : "active";
-            return $"{Name} [{Session.Registry.SessionId}] {state}";
+            return FormatSessionChoice(Session);
         }
     }
 }
