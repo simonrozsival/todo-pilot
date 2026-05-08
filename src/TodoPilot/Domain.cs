@@ -51,7 +51,8 @@ public sealed record DiscoveredSession(
     SessionRegistryEntry Registry,
     bool IsStale,
     bool HasSessionDatabase,
-    SessionMetadata? Metadata)
+    SessionMetadata? Metadata,
+    bool IsExtensionProcessRunning = true)
 {
     public string DisplayCwd => Metadata?.Cwd ?? Registry.Cwd ?? "";
 }

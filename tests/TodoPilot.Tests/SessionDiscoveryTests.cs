@@ -75,6 +75,86 @@ public sealed class SessionDiscoveryTests
     }
 
     [Fact]
+    public void Discover_MarksEntriesWithLiveExtensionProcess()
+    {
+        var home = Directory.CreateTempSubdirectory();
+        var project = Directory.CreateTempSubdirectory();
+        try
+        {
+            var paths = new AppPaths(home.FullName, project.FullName);
+            Directory.CreateDirectory(paths.RegistrySessionsDirectory);
+
+            WriteEntry(paths, new SessionRegistryEntry
+            {
+                SessionId = "11111111-1111-1111-1111-111111111111",
+                LastSeen = DateTimeOffset.UtcNow.ToString("O"),
+                StartedAt = DateTimeOffset.UtcNow.ToString("O"),
+                Status = "active",
+                Pid = Environment.ProcessId
+            });
+            WriteEntry(paths, new SessionRegistryEntry
+            {
+                SessionId = "22222222-2222-2222-2222-222222222222",
+                LastSeen = DateTimeOffset.UtcNow.ToString("O"),
+                StartedAt = DateTimeOffset.UtcNow.ToString("O"),
+                Status = "active",
+                Pid = int.MaxValue
+            });
+
+            var sessions = new SessionDiscovery(paths).Discover(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(20));
+
+            Assert.Collection(
+                sessions,
+                session =>
+                {
+                    Assert.Equal("11111111-1111-1111-1111-111111111111", session.Registry.SessionId);
+                    Assert.True(session.IsExtensionProcessRunning);
+                },
+                session =>
+                {
+                    Assert.Equal("22222222-2222-2222-2222-222222222222", session.Registry.SessionId);
+                    Assert.False(session.IsExtensionProcessRunning);
+                });
+        }
+        finally
+        {
+            home.Delete(recursive: true);
+            project.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("shutdown")]
+    [InlineData("stopped")]
+    public void Discover_DoesNotTreatStoppedStatusesAsRunning(string status)
+    {
+        var home = Directory.CreateTempSubdirectory();
+        var project = Directory.CreateTempSubdirectory();
+        try
+        {
+            var paths = new AppPaths(home.FullName, project.FullName);
+            Directory.CreateDirectory(paths.RegistrySessionsDirectory);
+            WriteEntry(paths, new SessionRegistryEntry
+            {
+                SessionId = "11111111-1111-1111-1111-111111111111",
+                LastSeen = DateTimeOffset.UtcNow.ToString("O"),
+                StartedAt = DateTimeOffset.UtcNow.ToString("O"),
+                Status = status,
+                Pid = Environment.ProcessId
+            });
+
+            var session = Assert.Single(new SessionDiscovery(paths).Discover(DateTimeOffset.UtcNow, TimeSpan.FromSeconds(20)));
+
+            Assert.False(session.IsExtensionProcessRunning);
+        }
+        finally
+        {
+            home.Delete(recursive: true);
+            project.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public void Discover_ReturnsEmptyWhenRegistryDirectoryIsMissing()
     {
         var home = Directory.CreateTempSubdirectory();

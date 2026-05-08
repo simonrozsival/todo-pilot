@@ -19,6 +19,9 @@ dnx todo-pilot uninstall
 
 The install flow lets you choose user scope (`~/.copilot/extensions/todo-pilot`) or project scope (`.github/extensions/todo-pilot` under the git root).
 
+The session picker shows only sessions whose companion extension process is still running by default. Press Ctrl+A to switch between that narrowed view and all registered sessions.
+After choosing a session, press Ctrl+X from the TODO view to return to the session picker.
+
 ## Packaging
 
 The tool targets .NET 10 and is configured for .NET 10+ platform-specific Native AOT NuGet tool packaging.
@@ -39,7 +42,7 @@ The sidebar is intended to run on macOS, Linux, and Windows terminals. Before re
 | --- | --- | --- |
 | Live view | Alternate screen opens/restores, cursor is visible after `q` and Ctrl+C | ANSI-capable terminals open/restores; redirected output does not print raw escape setup |
 | Resize | Window resize rewraps TODO and session-selection rows | Polling fallback detects width/height changes and rewraps rows |
-| Input | `q`, Ctrl+C, arrows, `j`/`k`, PgUp/PgDn, Home/End, Enter, Space, Backspace, Ctrl+U; Escape does not quit | Same key behavior in Windows Terminal/PowerShell |
+| Input | `q`, Ctrl+C, arrows, `j`/`k`, PgUp/PgDn, Home/End, Enter, Space, Backspace, Ctrl+U, Ctrl+A, Ctrl+X; Escape does not quit | Same key behavior in Windows Terminal/PowerShell |
 | Paths | `~/.copilot`, `.github/extensions`, and repo-root discovery work with Unix paths | `%USERPROFILE%\.copilot`, project extensions, and case-insensitive path comparisons work |
 | SQLite | Missing DB/table is a quiet empty state; optional schema drift is ignored | Same behavior while Copilot is concurrently writing session data |
 

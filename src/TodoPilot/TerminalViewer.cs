@@ -10,6 +10,12 @@ public sealed class TerminalViewer
     private readonly SessionDiscovery _discovery;
     private readonly TodoDatabaseReader _todoReader = new();
 
+    private enum TodoListExitAction
+    {
+        Quit,
+        SwitchSession
+    }
+
     public TerminalViewer(AppPaths paths)
     {
         _paths = paths;
@@ -22,6 +28,7 @@ public sealed class TerminalViewer
         var refreshInterval = TimeSpan.FromSeconds(1);
         var focusMarkerTimeout = TimeSpan.FromMinutes(1);
         var sessions = _discovery.Discover(DateTimeOffset.UtcNow, staleAfter);
+        var showNoSessionsMessage = false;
 
         if (sessions.Count == 0)
         {
@@ -30,174 +37,252 @@ public sealed class TerminalViewer
             return;
         }
 
-        using var screen = TerminalScreen.Enter();
-        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        ConsoleCancelEventHandler cancelHandler = (_, e) =>
+        using (TerminalScreen.Enter())
         {
-            e.Cancel = true;
-            linkedCts.Cancel();
-        };
-        Console.CancelKeyPress += cancelHandler;
-
-        try
-        {
-            var selectedSession = PromptForSession(sessions, linkedCts.Token);
-            if (selectedSession is null)
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            ConsoleCancelEventHandler cancelHandler = (_, e) =>
             {
-                return;
-            }
+                e.Cancel = true;
+                linkedCts.Cancel();
+            };
+            Console.CancelKeyPress += cancelHandler;
 
-            Console.Write("\u001b[H\u001b[2J");
-            string? renderedKey = null;
-            var scrollOffset = 0;
-            var visibleTodoCount = 1;
-            string? focusedTodoId = null;
-            string? expandedTodoId = null;
-            DateTimeOffset? lastFocusNavigationAt = null;
-            var resizeRequested = 0;
-            using var resizeWatcher = TerminalResizeWatcher.Create(() => Interlocked.Exchange(ref resizeRequested, 1));
-            var databasePath = _paths.GetSessionDatabasePath(selectedSession.Registry.SessionId);
-            var initialSnapshotTask = Task.Run(() => _todoReader.Read(databasePath), linkedCts.Token);
-            var initialRenderable = BuildLoadingView(selectedSession, spinnerFrame: 0);
-
-            await AnsiConsole.Live(initialRenderable)
-                .AutoClear(false)
-                .Overflow(VerticalOverflow.Crop)
-                .Cropping(VerticalOverflowCropping.Bottom)
-                .StartAsync(async ctx =>
+            try
+            {
+                while (!linkedCts.IsCancellationRequested)
                 {
-                    var loadingFrame = 0;
-                    while (!initialSnapshotTask.IsCompleted && !linkedCts.IsCancellationRequested)
+                    var selectedSession = PromptForSession(sessions, linkedCts.Token);
+                    if (selectedSession is null)
+                    {
+                        break;
+                    }
+
+                    Console.Write("\u001b[H\u001b[2J");
+                    var action = await RunTodoListAsync(
+                        selectedSession,
+                        refreshInterval,
+                        focusMarkerTimeout,
+                        linkedCts.Token).ConfigureAwait(false);
+
+                    if (action == TodoListExitAction.Quit)
+                    {
+                        break;
+                    }
+
+                    sessions = _discovery.Discover(DateTimeOffset.UtcNow, staleAfter);
+                    if (sessions.Count == 0)
+                    {
+                        showNoSessionsMessage = true;
+                        break;
+                    }
+
+                    Console.Write("\u001b[H\u001b[2J");
+                }
+            }
+            catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
+            {
+            }
+            finally
+            {
+                Console.CancelKeyPress -= cancelHandler;
+                AnsiConsole.Clear();
+            }
+        }
+
+        if (showNoSessionsMessage)
+        {
+            AnsiConsole.MarkupLine("[yellow]No enabled sessions found.[/]");
+            AnsiConsole.MarkupLine("[grey]Start or reload Copilot CLI after installing the extension.[/]");
+        }
+    }
+
+    private async Task<TodoListExitAction> RunTodoListAsync(
+        DiscoveredSession selectedSession,
+        TimeSpan refreshInterval,
+        TimeSpan focusMarkerTimeout,
+        CancellationToken cancellationToken)
+    {
+        string? renderedKey = null;
+        var scrollOffset = 0;
+        var visibleTodoCount = 1;
+        string? focusedTodoId = null;
+        string? expandedTodoId = null;
+        DateTimeOffset? lastFocusNavigationAt = null;
+        var resizeRequested = 0;
+        var quitRequested = false;
+        var switchSessionRequested = false;
+        using var resizeWatcher = TerminalResizeWatcher.Create(() => Interlocked.Exchange(ref resizeRequested, 1));
+        var databasePath = _paths.GetSessionDatabasePath(selectedSession.Registry.SessionId);
+        var initialSnapshotTask = Task.Run(() => _todoReader.Read(databasePath), cancellationToken);
+        var initialRenderable = BuildLoadingView(selectedSession, spinnerFrame: 0);
+
+        await AnsiConsole.Live(initialRenderable)
+            .AutoClear(false)
+            .Overflow(VerticalOverflow.Crop)
+            .Cropping(VerticalOverflowCropping.Bottom)
+            .StartAsync(async ctx =>
+            {
+                var loadingFrame = 0;
+                while (!initialSnapshotTask.IsCompleted
+                    && !cancellationToken.IsCancellationRequested
+                    && !quitRequested
+                    && !switchSessionRequested)
+                {
+                    while (TerminalKeyboard.TryReadKey(out var key))
+                    {
+                        var keyAction = TerminalKeyboard.MapTodoListKey(key);
+                        if (keyAction == TodoListKeyAction.Quit)
+                        {
+                            quitRequested = true;
+                            break;
+                        }
+
+                        if (keyAction == TodoListKeyAction.SwitchSession)
+                        {
+                            switchSessionRequested = true;
+                            break;
+                        }
+                    }
+
+                    if (quitRequested || switchSessionRequested)
+                    {
+                        return;
+                    }
+
+                    ctx.UpdateTarget(BuildLoadingView(selectedSession, ++loadingFrame));
+                    ctx.Refresh();
+                    await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                }
+
+                if (quitRequested || switchSessionRequested)
+                {
+                    return;
+                }
+
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var initialNow = DateTimeOffset.Now;
+                var initialSnapshot = await initialSnapshotTask.ConfigureAwait(false);
+                focusedTodoId = SelectDefaultFocusedTodoId(initialSnapshot.Todos, focusedTodoId);
+                var initialDisplay = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, initialNow, focusMarkerTimeout);
+                renderedKey = CreateRenderKey(initialSnapshot, initialNow, initialDisplay);
+                var initialView = BuildTodoList(selectedSession, initialSnapshot, initialNow, scrollOffset, initialDisplay);
+                scrollOffset = initialView.Scroll.Offset;
+                visibleTodoCount = Math.Max(1, initialView.VisibleTodoCount);
+                ctx.UpdateTarget(initialView.Renderable);
+                ctx.Refresh();
+
+                while (!cancellationToken.IsCancellationRequested && !quitRequested && !switchSessionRequested)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var now = DateTimeOffset.Now;
+                    var snapshot = _todoReader.Read(databasePath);
+                    focusedTodoId = SelectDefaultFocusedTodoId(snapshot.Todos, focusedTodoId);
+                    if (expandedTodoId is not null && !snapshot.Todos.Any(todo => todo.Id == expandedTodoId))
+                    {
+                        expandedTodoId = null;
+                    }
+
+                    var display = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, now, focusMarkerTimeout);
+                    var renderKey = CreateRenderKey(snapshot, now, display);
+                    var resizeRequestedNow = Interlocked.Exchange(ref resizeRequested, 0) != 0;
+                    var shouldRender = ShouldRender(renderedKey, renderKey, resizeRequestedNow);
+
+                    if (shouldRender)
+                    {
+                        var view = BuildTodoList(selectedSession, snapshot, now, scrollOffset, display);
+                        scrollOffset = view.Scroll.Offset;
+                        visibleTodoCount = Math.Max(1, view.VisibleTodoCount);
+                        ctx.UpdateTarget(view.Renderable);
+                        ctx.Refresh();
+                        renderedKey = renderKey;
+                    }
+
+                    var until = DateTimeOffset.UtcNow + refreshInterval;
+                    while (DateTimeOffset.UtcNow < until
+                        && !cancellationToken.IsCancellationRequested
+                        && !quitRequested
+                        && !switchSessionRequested)
                     {
                         while (TerminalKeyboard.TryReadKey(out var key))
                         {
-                            if (IsQuitKey(key))
+                            switch (TerminalKeyboard.MapTodoListKey(key))
                             {
-                                linkedCts.Cancel();
+                                case TodoListKeyAction.Quit:
+                                    quitRequested = true;
+                                    break;
+                                case TodoListKeyAction.SwitchSession:
+                                    switchSessionRequested = true;
+                                    break;
+                                case TodoListKeyAction.Refresh:
+                                    renderedKey = null;
+                                    until = DateTimeOffset.UtcNow;
+                                    break;
+                                case TodoListKeyAction.FocusPrevious:
+                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -1);
+                                    lastFocusNavigationAt = DateTimeOffset.Now;
+                                    renderedKey = null;
+                                    until = DateTimeOffset.UtcNow;
+                                    break;
+                                case TodoListKeyAction.FocusNext:
+                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, 1);
+                                    lastFocusNavigationAt = DateTimeOffset.Now;
+                                    renderedKey = null;
+                                    until = DateTimeOffset.UtcNow;
+                                    break;
+                                case TodoListKeyAction.ToggleExpanded:
+                                    if (focusedTodoId is not null)
+                                    {
+                                        expandedTodoId = string.Equals(expandedTodoId, focusedTodoId, StringComparison.Ordinal)
+                                            ? null
+                                            : focusedTodoId;
+                                        renderedKey = null;
+                                        until = DateTimeOffset.UtcNow;
+                                    }
+                                    break;
+                                case TodoListKeyAction.PageNext:
+                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, visibleTodoCount);
+                                    lastFocusNavigationAt = DateTimeOffset.Now;
+                                    renderedKey = null;
+                                    until = DateTimeOffset.UtcNow;
+                                    break;
+                                case TodoListKeyAction.PagePrevious:
+                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -visibleTodoCount);
+                                    lastFocusNavigationAt = DateTimeOffset.Now;
+                                    renderedKey = null;
+                                    until = DateTimeOffset.UtcNow;
+                                    break;
+                                case TodoListKeyAction.FocusFirst:
+                                    focusedTodoId = snapshot.Todos.FirstOrDefault()?.Id;
+                                    lastFocusNavigationAt = DateTimeOffset.Now;
+                                    renderedKey = null;
+                                    until = DateTimeOffset.UtcNow;
+                                    break;
+                                case TodoListKeyAction.FocusLast:
+                                    focusedTodoId = snapshot.Todos.LastOrDefault()?.Id;
+                                    lastFocusNavigationAt = DateTimeOffset.Now;
+                                    renderedKey = null;
+                                    until = DateTimeOffset.UtcNow;
+                                    break;
+                            }
+
+                            if (quitRequested || switchSessionRequested)
+                            {
                                 break;
                             }
                         }
 
-                        ctx.UpdateTarget(BuildLoadingView(selectedSession, ++loadingFrame));
-                        ctx.Refresh();
-                        await Task.Delay(100, linkedCts.Token).ConfigureAwait(false);
+                        if (quitRequested || switchSessionRequested)
+                        {
+                            break;
+                        }
+
+                        await Task.Delay(100, cancellationToken).ConfigureAwait(false);
                     }
+                }
+            }).ConfigureAwait(false);
 
-                    linkedCts.Token.ThrowIfCancellationRequested();
-
-                    var initialNow = DateTimeOffset.Now;
-                    var initialSnapshot = await initialSnapshotTask.ConfigureAwait(false);
-                    focusedTodoId = SelectDefaultFocusedTodoId(initialSnapshot.Todos, focusedTodoId);
-                    var initialDisplay = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, initialNow, focusMarkerTimeout);
-                    renderedKey = CreateRenderKey(initialSnapshot, initialNow, initialDisplay);
-                    var initialView = BuildTodoList(selectedSession, initialSnapshot, initialNow, scrollOffset, initialDisplay);
-                    scrollOffset = initialView.Scroll.Offset;
-                    visibleTodoCount = Math.Max(1, initialView.VisibleTodoCount);
-                    ctx.UpdateTarget(initialView.Renderable);
-                    ctx.Refresh();
-
-                    while (!linkedCts.IsCancellationRequested)
-                    {
-                        linkedCts.Token.ThrowIfCancellationRequested();
-                        var now = DateTimeOffset.Now;
-                        var snapshot = _todoReader.Read(databasePath);
-                        focusedTodoId = SelectDefaultFocusedTodoId(snapshot.Todos, focusedTodoId);
-                        if (expandedTodoId is not null && !snapshot.Todos.Any(todo => todo.Id == expandedTodoId))
-                        {
-                            expandedTodoId = null;
-                        }
-
-                        var display = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, now, focusMarkerTimeout);
-                        var renderKey = CreateRenderKey(snapshot, now, display);
-                        var resizeRequestedNow = Interlocked.Exchange(ref resizeRequested, 0) != 0;
-                        var shouldRender = ShouldRender(renderedKey, renderKey, resizeRequestedNow);
-
-                        if (shouldRender)
-                        {
-                            var view = BuildTodoList(selectedSession, snapshot, now, scrollOffset, display);
-                            scrollOffset = view.Scroll.Offset;
-                            visibleTodoCount = Math.Max(1, view.VisibleTodoCount);
-                            ctx.UpdateTarget(view.Renderable);
-                            ctx.Refresh();
-                            renderedKey = renderKey;
-                        }
-
-                        var until = DateTimeOffset.UtcNow + refreshInterval;
-                        while (DateTimeOffset.UtcNow < until && !linkedCts.IsCancellationRequested)
-                        {
-                            while (TerminalKeyboard.TryReadKey(out var key))
-                            {
-                                switch (TerminalKeyboard.MapTodoListKey(key))
-                                {
-                                    case TodoListKeyAction.Quit:
-                                        linkedCts.Cancel();
-                                        break;
-                                    case TodoListKeyAction.Refresh:
-                                        renderedKey = null;
-                                        until = DateTimeOffset.UtcNow;
-                                        break;
-                                    case TodoListKeyAction.FocusPrevious:
-                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -1);
-                                        lastFocusNavigationAt = DateTimeOffset.Now;
-                                        renderedKey = null;
-                                        until = DateTimeOffset.UtcNow;
-                                        break;
-                                    case TodoListKeyAction.FocusNext:
-                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, 1);
-                                        lastFocusNavigationAt = DateTimeOffset.Now;
-                                        renderedKey = null;
-                                        until = DateTimeOffset.UtcNow;
-                                        break;
-                                    case TodoListKeyAction.ToggleExpanded:
-                                        if (focusedTodoId is not null)
-                                        {
-                                            expandedTodoId = string.Equals(expandedTodoId, focusedTodoId, StringComparison.Ordinal)
-                                                ? null
-                                                : focusedTodoId;
-                                            renderedKey = null;
-                                            until = DateTimeOffset.UtcNow;
-                                        }
-                                        break;
-                                    case TodoListKeyAction.PageNext:
-                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, visibleTodoCount);
-                                        lastFocusNavigationAt = DateTimeOffset.Now;
-                                        renderedKey = null;
-                                        until = DateTimeOffset.UtcNow;
-                                        break;
-                                    case TodoListKeyAction.PagePrevious:
-                                        focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -visibleTodoCount);
-                                        lastFocusNavigationAt = DateTimeOffset.Now;
-                                        renderedKey = null;
-                                        until = DateTimeOffset.UtcNow;
-                                        break;
-                                    case TodoListKeyAction.FocusFirst:
-                                        focusedTodoId = snapshot.Todos.FirstOrDefault()?.Id;
-                                        lastFocusNavigationAt = DateTimeOffset.Now;
-                                        renderedKey = null;
-                                        until = DateTimeOffset.UtcNow;
-                                        break;
-                                    case TodoListKeyAction.FocusLast:
-                                        focusedTodoId = snapshot.Todos.LastOrDefault()?.Id;
-                                        lastFocusNavigationAt = DateTimeOffset.Now;
-                                        renderedKey = null;
-                                        until = DateTimeOffset.UtcNow;
-                                        break;
-                                }
-                            }
-
-                            await Task.Delay(100, linkedCts.Token).ConfigureAwait(false);
-                        }
-                    }
-                }).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (linkedCts.IsCancellationRequested)
-        {
-        }
-        finally
-        {
-            Console.CancelKeyPress -= cancelHandler;
-            AnsiConsole.Clear();
-        }
+        return switchSessionRequested ? TodoListExitAction.SwitchSession : TodoListExitAction.Quit;
     }
 
     private static TerminalRenderer.TodoListView BuildTodoList(
@@ -236,6 +321,7 @@ public sealed class TerminalViewer
         var filter = "";
         var visibleItemCount = 1;
         var showSessionIds = false;
+        var showOnlyRunningExtensionSessions = true;
         var resizeRequested = 1;
         var shouldRender = true;
         TerminalSize? renderedSize = null;
@@ -243,7 +329,9 @@ public sealed class TerminalViewer
 
         while (!cancellationToken.IsCancellationRequested)
         {
-            var filteredSessions = FilterSessions(sessions, filter);
+            var filteredSessions = FilterSessions(
+                GetSessionsForView(sessions, showOnlyRunningExtensionSessions),
+                filter);
             if (filteredSessions.Count == 0)
             {
                 selectedIndex = 0;
@@ -265,7 +353,8 @@ public sealed class TerminalViewer
                     filter,
                     terminalSize.Width,
                     terminalSize.Height,
-                    showSessionIds: showSessionIds);
+                    showSessionIds: showSessionIds,
+                    showOnlyRunningExtensionSessions: showOnlyRunningExtensionSessions);
                 scrollOffset = view.Scroll.Offset;
                 visibleItemCount = Math.Max(1, view.VisibleItemCount);
 
@@ -324,6 +413,12 @@ public sealed class TerminalViewer
                     showSessionIds = !showSessionIds;
                     shouldRender = true;
                     break;
+                case SessionSelectionKeyAction.ToggleRunningOnly:
+                    showOnlyRunningExtensionSessions = !showOnlyRunningExtensionSessions;
+                    selectedIndex = 0;
+                    scrollOffset = 0;
+                    shouldRender = true;
+                    break;
                 case SessionSelectionKeyAction.AppendFilter:
                     filter += key.KeyChar;
                     selectedIndex = 0;
@@ -344,7 +439,8 @@ public sealed class TerminalViewer
         int consoleWidth,
         int consoleHeight,
         DateTimeOffset? now = null,
-        bool showSessionIds = false)
+        bool showSessionIds = false,
+        bool showOnlyRunningExtensionSessions = true)
     {
         var content = BuildSessionSelectionContent(
             sessions,
@@ -354,7 +450,8 @@ public sealed class TerminalViewer
             consoleWidth,
             consoleHeight,
             now,
-            showSessionIds);
+            showSessionIds,
+            showOnlyRunningExtensionSessions);
         return new SessionSelectionView(
             TerminalRenderer.ToRows(content.Lines),
             content.Scroll,
@@ -369,7 +466,8 @@ public sealed class TerminalViewer
         int consoleWidth,
         int consoleHeight,
         DateTimeOffset? now = null,
-        bool showSessionIds = false)
+        bool showSessionIds = false,
+        bool showOnlyRunningExtensionSessions = true)
     {
         var contentWidth = TerminalRenderer.GetContentWidth(consoleWidth);
         var renderedAt = now ?? DateTimeOffset.Now;
@@ -387,7 +485,7 @@ public sealed class TerminalViewer
         if (sessions.Count == 0)
         {
             bodyRows.Add(new TerminalRenderer.ListLine(
-                $"{TerminalRenderer.Padding()}[grey]No sessions match the current filter.[/]",
+                $"{TerminalRenderer.Padding()}[grey]{Markup.Escape(GetEmptySessionSelectionText(filter, showOnlyRunningExtensionSessions))}[/]",
                 ItemId: null));
         }
         else
@@ -405,7 +503,7 @@ public sealed class TerminalViewer
         var content = TerminalRenderer.BuildListLayoutContent(
             headerRows,
             bodyRows,
-            scroll => BuildSessionSelectionFooterRows(contentWidth, scroll, showSessionIds),
+            scroll => BuildSessionSelectionFooterRows(contentWidth, scroll, showSessionIds, showOnlyRunningExtensionSessions),
             consoleHeight,
             scrollOffset,
             totalItemCount: sessions.Count,
@@ -442,6 +540,20 @@ public sealed class TerminalViewer
 
         return sessions
             .Where(session => GetSessionSearchText(session).Contains(filter.Trim(), StringComparison.OrdinalIgnoreCase))
+            .ToArray();
+    }
+
+    public static IReadOnlyList<DiscoveredSession> GetSessionsForView(
+        IReadOnlyList<DiscoveredSession> sessions,
+        bool showOnlyRunningExtensionSessions)
+    {
+        if (!showOnlyRunningExtensionSessions)
+        {
+            return sessions;
+        }
+
+        return sessions
+            .Where(session => session.IsExtensionProcessRunning)
             .ToArray();
     }
 
@@ -577,6 +689,7 @@ public sealed class TerminalViewer
             session.Metadata?.Repository,
             session.Metadata?.Branch,
             session.Metadata?.Summary,
+            session.IsExtensionProcessRunning ? "running extension process" : "stopped extension process",
             session.IsStale ? "stale" : "active");
 
     private static string GetSelectionFilterText(string filter) =>
@@ -584,13 +697,30 @@ public sealed class TerminalViewer
             ? "Type to filter by session name, repo, directory, UUID, or state"
             : $"Filter: {filter}";
 
-    private static IReadOnlyList<string> BuildSessionSelectionFooterRows(int contentWidth, TerminalRenderer.ScrollMetrics? scroll, bool showSessionIds)
+    private static string GetEmptySessionSelectionText(string filter, bool showOnlyRunningExtensionSessions)
+    {
+        if (!showOnlyRunningExtensionSessions)
+        {
+            return "No sessions match the current filter.";
+        }
+
+        return string.IsNullOrWhiteSpace(filter)
+            ? "No sessions with a running extension process. Press ctrl+a to show all registered sessions."
+            : "No running sessions match the current filter. Press ctrl+a to show all registered sessions.";
+    }
+
+    private static IReadOnlyList<string> BuildSessionSelectionFooterRows(
+        int contentWidth,
+        TerminalRenderer.ScrollMetrics? scroll,
+        bool showSessionIds,
+        bool showOnlyRunningExtensionSessions)
     {
         var rows = new List<string> { "" };
         var uuidToggle = showSessionIds ? "ctrl+u hide UUIDs" : "ctrl+u show UUIDs";
+        var viewToggle = showOnlyRunningExtensionSessions ? "ctrl+a show all" : "ctrl+a running only";
         var text = scroll is { CanScroll: true } scrollMetrics
-            ? $"{TerminalRenderer.FormatFooterStatus(scrollMetrics)} · j/k move · PgUp/PgDn scroll · enter select · type filter · {uuidToggle} · q quit"
-            : $"j/k move · enter select · type filter · {uuidToggle} · q quit";
+            ? $"{TerminalRenderer.FormatFooterStatus(scrollMetrics)} · j/k move · PgUp/PgDn scroll · enter select · type filter · {uuidToggle} · {viewToggle} · q quit"
+            : $"j/k move · enter select · type filter · {uuidToggle} · {viewToggle} · q quit";
         foreach (var line in TerminalRenderer.WrapText(text, contentWidth, contentWidth))
         {
             rows.Add($"{TerminalRenderer.Padding()}[grey]{Markup.Escape(line)}[/]");

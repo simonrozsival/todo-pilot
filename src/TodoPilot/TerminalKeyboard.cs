@@ -11,7 +11,8 @@ public enum TodoListKeyAction
     PageNext,
     FocusFirst,
     FocusLast,
-    ToggleExpanded
+    ToggleExpanded,
+    SwitchSession
 }
 
 public enum SessionSelectionKeyAction
@@ -27,6 +28,7 @@ public enum SessionSelectionKeyAction
     Last,
     Backspace,
     ToggleSessionIds,
+    ToggleRunningOnly,
     AppendFilter
 }
 
@@ -60,8 +62,14 @@ public static class TerminalKeyboard
         }
     }
 
-    public static TodoListKeyAction MapTodoListKey(ConsoleKeyInfo key) =>
-        key.Key switch
+    public static TodoListKeyAction MapTodoListKey(ConsoleKeyInfo key)
+    {
+        if (key.Key == ConsoleKey.X && key.Modifiers.HasFlag(ConsoleModifiers.Control))
+        {
+            return TodoListKeyAction.SwitchSession;
+        }
+
+        return key.Key switch
         {
             ConsoleKey.Q => TodoListKeyAction.Quit,
             ConsoleKey.R => TodoListKeyAction.Refresh,
@@ -74,12 +82,18 @@ public static class TerminalKeyboard
             ConsoleKey.Enter or ConsoleKey.Spacebar => TodoListKeyAction.ToggleExpanded,
             _ => TodoListKeyAction.None
         };
+    }
 
     public static SessionSelectionKeyAction MapSessionSelectionKey(ConsoleKeyInfo key)
     {
         if (key.Key == ConsoleKey.U && key.Modifiers.HasFlag(ConsoleModifiers.Control))
         {
             return SessionSelectionKeyAction.ToggleSessionIds;
+        }
+
+        if (key.Key == ConsoleKey.A && key.Modifiers.HasFlag(ConsoleModifiers.Control))
+        {
+            return SessionSelectionKeyAction.ToggleRunningOnly;
         }
 
         return key.Key switch

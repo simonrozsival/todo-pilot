@@ -15,6 +15,7 @@ public sealed class TerminalKeyboardTests
     [InlineData(ConsoleKey.End, '\0', false, false, false, TodoListKeyAction.FocusLast)]
     [InlineData(ConsoleKey.Enter, '\n', false, false, false, TodoListKeyAction.ToggleExpanded)]
     [InlineData(ConsoleKey.Spacebar, ' ', false, false, false, TodoListKeyAction.ToggleExpanded)]
+    [InlineData(ConsoleKey.X, 'x', false, false, true, TodoListKeyAction.SwitchSession)]
     [InlineData(ConsoleKey.Escape, '\u001b', false, false, false, TodoListKeyAction.None)]
     public void MapTodoListKey_NormalizesSupportedKeys(ConsoleKey consoleKey, char keyChar, bool shift, bool alt, bool control, TodoListKeyAction expected)
     {
@@ -37,6 +38,14 @@ public sealed class TerminalKeyboardTests
         var key = new ConsoleKeyInfo('u', ConsoleKey.U, shift: false, alt: false, control: true);
 
         Assert.Equal(SessionSelectionKeyAction.ToggleSessionIds, TerminalKeyboard.MapSessionSelectionKey(key));
+    }
+
+    [Fact]
+    public void MapSessionSelectionKey_MapsCtrlAToToggleRunningOnly()
+    {
+        var key = new ConsoleKeyInfo('a', ConsoleKey.A, shift: false, alt: false, control: true);
+
+        Assert.Equal(SessionSelectionKeyAction.ToggleRunningOnly, TerminalKeyboard.MapSessionSelectionKey(key));
     }
 
     [Fact]

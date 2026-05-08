@@ -287,8 +287,8 @@ public static class TerminalRenderer
         var rows = new List<string>();
         rows.Add("");
         var text = scroll is { CanScroll: true } scrollMetrics
-            ? $"{FormatFooterStatus(scrollMetrics)} · ↑↓ focus · enter expand · r refresh · q quit"
-            : "↑↓ focus · enter expand · r refresh · q quit";
+            ? $"{FormatFooterStatus(scrollMetrics)} · ↑↓ focus · enter expand · r refresh · ctrl+x sessions · q quit"
+            : "↑↓ focus · enter expand · r refresh · ctrl+x sessions · q quit";
         AddWrappedMarkup(rows, text, contentWidth, TimestampStyle);
         rows.Add("");
         return rows;

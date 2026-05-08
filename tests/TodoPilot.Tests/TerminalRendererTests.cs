@@ -803,6 +803,23 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void BuildTodoListView_FooterIncludesSessionSwitchShortcut()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(TodoReadState.Available, [], "hash", "0 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"),
+            consoleWidth: 120,
+            consoleHeight: 10,
+            scrollOffset: 0);
+
+        Assert.Contains("ctrl+x sessions", string.Join('\n', view.Lines), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void FormatFooterStatus_IncludesOnlyPage()
     {
         var scroll = new TerminalRenderer.ScrollMetrics(
@@ -1158,6 +1175,56 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void GetSessionsForView_DefaultNarrowedViewReturnsOnlyRunningExtensionProcesses()
+    {
+        var running = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "Running",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/running",
+            isExtensionProcessRunning: true);
+        var stopped = CreateSessionWithMetadata(
+            sessionId: "22222222-2222-2222-2222-222222222222",
+            summary: "Stopped",
+            repository: "repo-two",
+            branch: "main",
+            cwd: "/tmp/stopped",
+            isExtensionProcessRunning: false);
+
+        var narrowed = TerminalViewer.GetSessionsForView([running, stopped], showOnlyRunningExtensionSessions: true);
+        var full = TerminalViewer.GetSessionsForView([running, stopped], showOnlyRunningExtensionSessions: false);
+
+        var session = Assert.Single(narrowed);
+        Assert.Equal("11111111-1111-1111-1111-111111111111", session.Registry.SessionId);
+        Assert.Equal([running, stopped], full);
+    }
+
+    [Fact]
+    public void FilterSessions_SearchesExtensionProcessState()
+    {
+        var running = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first",
+            isExtensionProcessRunning: true);
+        var stopped = CreateSessionWithMetadata(
+            sessionId: "22222222-2222-2222-2222-222222222222",
+            summary: "Second",
+            repository: "repo-two",
+            branch: "feature",
+            cwd: "/tmp/second",
+            isExtensionProcessRunning: false);
+
+        var filtered = TerminalViewer.FilterSessions([running, stopped], "stopped extension");
+
+        var session = Assert.Single(filtered);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", session.Registry.SessionId);
+    }
+
+    [Fact]
     public void ClampSelectionScrollOffset_KeepsSelectedSessionVisible()
     {
         Assert.Equal(0, TerminalViewer.ClampSelectionScrollOffset(itemCount: 10, pageSize: 4, selectedIndex: 0, requestedOffset: 3));
@@ -1191,6 +1258,7 @@ public sealed class TerminalRendererTests
         Assert.DoesNotContain("[reverse]", string.Join('\n', content.Lines), StringComparison.Ordinal);
         Assert.StartsWith("  ", content.Lines[3], StringComparison.Ordinal);
         Assert.Contains("ctrl+u show UUIDs", string.Join('\n', content.Lines), StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ctrl+a show all", string.Join('\n', content.Lines), StringComparison.OrdinalIgnoreCase);
         Assert.Contains("q quit", string.Join('\n', content.Lines), StringComparison.Ordinal);
         Assert.DoesNotContain("11111111-1111-1111-1111-111111111111", string.Join('\n', content.Lines), StringComparison.Ordinal);
     }
@@ -1213,11 +1281,30 @@ public sealed class TerminalRendererTests
             filter: "",
             consoleWidth: 120,
             consoleHeight: 8,
-            showSessionIds: true);
+            showSessionIds: true,
+            showOnlyRunningExtensionSessions: false);
 
         var rendered = string.Join('\n', content.Lines);
         Assert.Contains(sessionId, rendered, StringComparison.Ordinal);
         Assert.Contains("ctrl+u hide UUIDs", rendered, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ctrl+a running only", rendered, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void BuildSessionSelectionContent_EmptyNarrowedViewExplainsShowAllToggle()
+    {
+        var content = TerminalViewer.BuildSessionSelectionContent(
+            [],
+            selectedIndex: 0,
+            scrollOffset: 0,
+            filter: "",
+            consoleWidth: 100,
+            consoleHeight: 8,
+            showOnlyRunningExtensionSessions: true);
+
+        var rendered = string.Join('\n', content.Lines);
+        Assert.Contains("No sessions with a running extension process", rendered, StringComparison.Ordinal);
+        Assert.Contains("ctrl+a show all", rendered, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]
@@ -1295,7 +1382,8 @@ public sealed class TerminalRendererTests
         string branch,
         string cwd,
         string? lastSeen = null,
-        bool isStale = false)
+        bool isStale = false,
+        bool isExtensionProcessRunning = true)
     {
         return new DiscoveredSession(
             new SessionRegistryEntry { SessionId = sessionId, Cwd = cwd, LastSeen = lastSeen ?? "" },
@@ -1308,6 +1396,7 @@ public sealed class TerminalRendererTests
                 Branch: branch,
                 Summary: summary,
                 CreatedAt: null,
-                UpdatedAt: null));
+                UpdatedAt: null),
+            isExtensionProcessRunning);
     }
 }
