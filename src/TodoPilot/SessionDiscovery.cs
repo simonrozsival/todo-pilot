@@ -15,6 +15,13 @@ public sealed class SessionDiscovery
         _metadataReader = new SessionMetadataReader(paths);
     }
 
+    public DiscoveredSession RefreshMetadata(DiscoveredSession session)
+    {
+        var metadata = _metadataReader.ReadAll();
+        metadata.TryGetValue(session.Registry.SessionId, out var sessionMetadata);
+        return session with { Metadata = sessionMetadata };
+    }
+
     public IReadOnlyList<DiscoveredSession> Discover(DateTimeOffset now, TimeSpan staleAfter)
     {
         if (!Directory.Exists(_paths.RegistrySessionsDirectory))

@@ -165,7 +165,7 @@ public sealed class TerminalViewer
                 var initialSnapshot = await initialSnapshotTask.ConfigureAwait(false);
                 focusedTodoId = SelectDefaultFocusedTodoId(initialSnapshot.Todos, focusedTodoId);
                 var initialDisplay = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, initialNow, focusMarkerTimeout);
-                renderedKey = CreateRenderKey(initialSnapshot, initialNow, initialDisplay);
+                renderedKey = CreateRenderKey(selectedSession, initialSnapshot, initialNow, initialDisplay);
                 var initialView = BuildTodoList(selectedSession, initialSnapshot, initialNow, scrollOffset, initialDisplay);
                 scrollOffset = initialView.Scroll.Offset;
                 visibleTodoCount = Math.Max(1, initialView.VisibleTodoCount);
@@ -176,6 +176,7 @@ public sealed class TerminalViewer
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var now = DateTimeOffset.Now;
+                    selectedSession = _discovery.RefreshMetadata(selectedSession);
                     var snapshot = _todoReader.Read(databasePath);
                     focusedTodoId = SelectDefaultFocusedTodoId(snapshot.Todos, focusedTodoId);
                     if (expandedTodoId is not null && !snapshot.Todos.Any(todo => todo.Id == expandedTodoId))
@@ -184,7 +185,7 @@ public sealed class TerminalViewer
                     }
 
                     var display = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, now, focusMarkerTimeout);
-                    var renderKey = CreateRenderKey(snapshot, now, display);
+                    var renderKey = CreateRenderKey(selectedSession, snapshot, now, display);
                     var resizeRequestedNow = Interlocked.Exchange(ref resizeRequested, 0) != 0;
                     var shouldRender = ShouldRender(renderedKey, renderKey, resizeRequestedNow);
 
@@ -574,6 +575,13 @@ public sealed class TerminalViewer
             displayState.FocusedTodoId ?? "",
             displayState.ExpandedTodoId ?? "",
             displayState.ShowFocusMarker);
+
+    public static string CreateRenderKey(DiscoveredSession session, TodoSnapshot snapshot, DateTimeOffset now, TodoListDisplayState displayState) =>
+        string.Join(
+            '\u001f',
+            CreateRenderKey(snapshot, now, displayState),
+            TerminalRenderer.GetSessionName(session),
+            session.DisplayCwd);
 
     public static string CreateRenderKey(TodoSnapshot snapshot, DateTimeOffset now, TerminalSize terminalSize) =>
         string.Join(
