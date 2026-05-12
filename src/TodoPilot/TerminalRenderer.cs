@@ -35,9 +35,10 @@ public static class TerminalRenderer
         int? consoleHeight = null,
         int scrollOffset = 0,
         SessionSidebarDetails? details = null,
-        TodoListDisplayState? displayState = null)
+        TodoListDisplayState? displayState = null,
+        int focusedContextItemCountBefore = 0)
     {
-        return BuildTodoListView(session, snapshot, now, consoleWidth, consoleHeight, scrollOffset, details, displayState).Renderable;
+        return BuildTodoListView(session, snapshot, now, consoleWidth, consoleHeight, scrollOffset, details, displayState, focusedContextItemCountBefore).Renderable;
     }
 
     public static TodoListView BuildTodoListView(
@@ -48,7 +49,8 @@ public static class TerminalRenderer
         int? consoleHeight = null,
         int scrollOffset = 0,
         SessionSidebarDetails? details = null,
-        TodoListDisplayState? displayState = null)
+        TodoListDisplayState? displayState = null,
+        int focusedContextItemCountBefore = 0)
     {
         var renderedAt = now ?? DateTimeOffset.Now;
         var contentWidth = GetContentWidth(consoleWidth);
@@ -61,7 +63,8 @@ public static class TerminalRenderer
             consoleHeight,
             scrollOffset,
             totalItemCount: snapshot.Todos.Count,
-            focusedItemId: displayState?.FocusedTodoId);
+            focusedItemId: displayState?.FocusedTodoId,
+            focusedContextItemCountBefore: focusedContextItemCountBefore);
 
         return new TodoListView(
             ToRows(content.Lines),
@@ -111,17 +114,21 @@ public static class TerminalRenderer
         int? consoleHeight,
         int scrollOffset,
         int totalItemCount,
-        string? focusedItemId = null)
+        string? focusedItemId = null,
+        int focusedContextItemCountBefore = 0)
     {
         var initialFooterRows = buildFooterRows(null);
         var scroll = CalculateScrollMetrics(bodyRows.Count, headerRows.Count, initialFooterRows.Count, consoleHeight, scrollOffset);
-        if (focusedItemId is not null && !VisibleRowsContain(BuildVisibleBodyRows(bodyRows, scroll), focusedItemId))
+        if (focusedItemId is not null)
         {
-            var focusedLineIndex = FirstLineIndexOf(bodyRows, focusedItemId);
-            if (focusedLineIndex >= 0)
-            {
-                scroll = CalculateScrollMetrics(bodyRows.Count, headerRows.Count, initialFooterRows.Count, consoleHeight, focusedLineIndex);
-            }
+            scroll = AdjustScrollForFocusedItem(
+                bodyRows,
+                headerRows.Count,
+                initialFooterRows.Count,
+                consoleHeight,
+                scroll,
+                focusedItemId,
+                focusedContextItemCountBefore);
         }
 
         var visibleBodyRows = BuildVisibleBodyRows(bodyRows, scroll);
@@ -281,6 +288,74 @@ public static class TerminalRenderer
 
     private static ListLine CreateScrollHint(string text) =>
         new($"{Padding()}[{TimestampStyle}]{Markup.Escape(text)}[/]", ItemId: null);
+
+    private static ScrollMetrics AdjustScrollForFocusedItem(
+        IReadOnlyList<ListLine> bodyRows,
+        int headerLineCount,
+        int footerLineCount,
+        int? consoleHeight,
+        ScrollMetrics currentScroll,
+        string focusedItemId,
+        int focusedContextItemCountBefore)
+    {
+        if (focusedContextItemCountBefore <= 0
+            && VisibleRowsContain(BuildVisibleBodyRows(bodyRows, currentScroll), focusedItemId))
+        {
+            return currentScroll;
+        }
+
+        var focusedLineIndex = FirstLineIndexOf(bodyRows, focusedItemId);
+        if (focusedLineIndex < 0)
+        {
+            return currentScroll;
+        }
+
+        var requestedOffset = focusedContextItemCountBefore <= 0
+            ? focusedLineIndex
+            : GetContextStartLineIndex(bodyRows, focusedItemId, focusedContextItemCountBefore);
+        var minimumOffsetForFocusedLine = Math.Max(0, focusedLineIndex - currentScroll.PageSize + 1);
+        requestedOffset = Math.Clamp(requestedOffset, minimumOffsetForFocusedLine, focusedLineIndex);
+
+        var adjusted = CalculateScrollMetrics(bodyRows.Count, headerLineCount, footerLineCount, consoleHeight, requestedOffset);
+        if (!VisibleRowsContain(BuildVisibleBodyRows(bodyRows, adjusted), focusedItemId))
+        {
+            adjusted = CalculateScrollMetrics(bodyRows.Count, headerLineCount, footerLineCount, consoleHeight, focusedLineIndex);
+        }
+
+        return adjusted;
+    }
+
+    private static int GetContextStartLineIndex(IReadOnlyList<ListLine> bodyRows, string focusedItemId, int itemCountBeforeFocused)
+    {
+        var itemStarts = GetItemStartLines(bodyRows);
+        var focusedItemIndex = itemStarts.FindIndex(item => string.Equals(item.Id, focusedItemId, StringComparison.Ordinal));
+        if (focusedItemIndex < 0)
+        {
+            return FirstLineIndexOf(bodyRows, focusedItemId);
+        }
+
+        var contextItemIndex = Math.Max(0, focusedItemIndex - itemCountBeforeFocused);
+        return itemStarts[contextItemIndex].FirstLineIndex;
+    }
+
+    private static List<ItemStart> GetItemStartLines(IReadOnlyList<ListLine> bodyRows)
+    {
+        var items = new List<ItemStart>();
+        string? previousItemId = null;
+        for (var i = 0; i < bodyRows.Count; i++)
+        {
+            var itemId = bodyRows[i].ItemId;
+            if (itemId is null || string.Equals(itemId, previousItemId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            items.Add(new ItemStart(itemId, i));
+            previousItemId = itemId;
+        }
+
+        return items;
+    }
 
     private static List<string> BuildFooterRows(int contentWidth, ScrollMetrics? scroll)
     {
@@ -873,6 +948,8 @@ public static class TerminalRenderer
     public sealed record ListLine(string Markup, string? ItemId);
 
     private sealed record ExpandedDetailRow(string Key, string Value, int Sequence);
+
+    private sealed record ItemStart(string Id, int FirstLineIndex);
 
     public sealed record ListLayoutContent(
         IReadOnlyList<string> Lines,

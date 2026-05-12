@@ -803,6 +803,83 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void BuildTodoListView_FollowsFocusedTodoWithCompletedContextAbove()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem("done-1", "Done 1", "done", null, null, null, []),
+                new TodoItem("done-2", "Done 2", "done", null, null, null, []),
+                new TodoItem("done-3", "Done 3", "done", null, null, null, []),
+                new TodoItem("done-4", "Done 4", "done", null, null, null, []),
+                new TodoItem("done-5", "Done 5", "done", null, null, null, []),
+                new TodoItem("wip", "Current work", "in_progress", null, null, null, []),
+                new TodoItem("next-1", "Next 1", "pending", null, null, null, []),
+                new TodoItem("next-2", "Next 2", "pending", null, null, null, []),
+                new TodoItem("next-3", "Next 3", "pending", null, null, null, []),
+                new TodoItem("next-4", "Next 4", "pending", null, null, null, []),
+                new TodoItem("next-5", "Next 5", "pending", null, null, null, []),
+                new TodoItem("next-6", "Next 6", "pending", null, null, null, [])
+            ],
+            "hash",
+            "12 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"),
+            consoleWidth: 80,
+            consoleHeight: 13,
+            scrollOffset: 0,
+            displayState: new TodoListDisplayState("wip"),
+            focusedContextItemCountBefore: 3);
+        var rendered = string.Join('\n', view.Lines);
+
+        Assert.True(view.HasMoreAbove);
+        Assert.True(view.HasMoreBelow);
+        Assert.DoesNotContain("Done 2", rendered, StringComparison.Ordinal);
+        Assert.Contains("Done 3", rendered, StringComparison.Ordinal);
+        Assert.Contains("Done 4", rendered, StringComparison.Ordinal);
+        Assert.Contains("Done 5", rendered, StringComparison.Ordinal);
+        Assert.Contains("[[•]] Current work", rendered, StringComparison.Ordinal);
+        Assert.Contains("Next 1", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("Next 2", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildTodoListView_KeepsFocusedTodoVisibleWhenContextDoesNotFit()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem("done-1", "Done 1", "done", null, null, null, []),
+                new TodoItem("done-2", "Done 2", "done", null, null, null, []),
+                new TodoItem("done-3", "Done 3", "done", null, null, null, []),
+                new TodoItem("done-4", "Done 4", "done", null, null, null, []),
+                new TodoItem("done-5", "Done 5", "done", null, null, null, []),
+                new TodoItem("wip", "Current work", "in_progress", null, null, null, []),
+                new TodoItem("next-1", "Next 1", "pending", null, null, null, []),
+                new TodoItem("next-2", "Next 2", "pending", null, null, null, [])
+            ],
+            "hash",
+            "8 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"),
+            consoleWidth: 80,
+            consoleHeight: 8,
+            scrollOffset: 0,
+            displayState: new TodoListDisplayState("wip"),
+            focusedContextItemCountBefore: 3);
+
+        Assert.Contains("[[•]] Current work", string.Join('\n', view.Lines), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildTodoListView_FooterIncludesSessionSwitchShortcut()
     {
         var session = CreateSession(metadataCwd: null, registryCwd: null);
@@ -887,10 +964,12 @@ public sealed class TerminalRendererTests
         var expanded = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-1", "todo-1"));
         var otherFocus = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-2", null));
         var visibleMarker = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-1", null, ShowFocusMarker: true));
+        var followedContext = TerminalViewer.CreateRenderKey(snapshot, now, new TodoListDisplayState("todo-1", null), focusedContextItemCountBefore: 3);
 
         Assert.NotEqual(focused, expanded);
         Assert.NotEqual(focused, otherFocus);
         Assert.NotEqual(focused, visibleMarker);
+        Assert.NotEqual(focused, followedContext);
     }
 
     [Fact]
@@ -918,6 +997,41 @@ public sealed class TerminalRendererTests
         Assert.Equal("pending", TerminalViewer.SelectDefaultFocusedTodoId(todos, "pending"));
         Assert.Equal("wip", TerminalViewer.SelectDefaultFocusedTodoId(todos, "missing"));
         Assert.Null(TerminalViewer.SelectDefaultFocusedTodoId([], null));
+    }
+
+    [Fact]
+    public void SelectAutoFollowedTodoId_RecomputesCurrentWorkWithoutPreservingPreviousFocus()
+    {
+        var todos = new[]
+        {
+            new TodoItem("done", "Done", "done", null, null, null, []),
+            new TodoItem("pending", "Pending", "pending", null, null, null, []),
+            new TodoItem("wip", "WIP", "in_progress", null, null, null, [])
+        };
+
+        Assert.Equal("wip", TerminalViewer.SelectAutoFollowedTodoId(todos));
+        Assert.Equal("pending", TerminalViewer.SelectAutoFollowedTodoId(todos.Where(todo => todo.Id != "wip").ToArray()));
+        Assert.Equal("done", TerminalViewer.SelectAutoFollowedTodoId(todos.Where(todo => todo.Status == "done").ToArray()));
+    }
+
+    [Fact]
+    public void SelectManualFocusedTodoId_PreservesManualFocusUntilMissingOrCompleted()
+    {
+        var before = new[]
+        {
+            new TodoItem("manual", "Manual", "pending", null, null, null, []),
+            new TodoItem("wip", "WIP", "in_progress", null, null, null, [])
+        };
+        var afterCompleted = new[]
+        {
+            new TodoItem("manual", "Manual", "done", null, null, null, []),
+            new TodoItem("wip", "WIP", "in_progress", null, null, null, [])
+        };
+
+        Assert.Equal("manual", TerminalViewer.SelectManualFocusedTodoId(before, "manual", "pending"));
+        Assert.Null(TerminalViewer.SelectManualFocusedTodoId(before, "missing", "pending"));
+        Assert.Null(TerminalViewer.SelectManualFocusedTodoId(afterCompleted, "manual", "pending"));
+        Assert.Equal("manual", TerminalViewer.SelectManualFocusedTodoId(afterCompleted, "manual", "done"));
     }
 
     [Fact]

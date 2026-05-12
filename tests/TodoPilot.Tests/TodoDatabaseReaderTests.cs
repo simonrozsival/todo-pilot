@@ -66,7 +66,7 @@ public sealed class TodoDatabaseReaderTests
     }
 
     [Fact]
-    public void Read_OrdersByWorkflowReadinessThenIdDescending()
+    public void Read_OrdersByCompletedContextThenWorkflowReadiness()
     {
         var directory = Directory.CreateTempSubdirectory();
         var dbPath = Path.Combine(directory.FullName, "session.db");
@@ -97,6 +97,8 @@ public sealed class TodoDatabaseReaderTests
 
             Assert.Equal(
                 [
+                    "done-a",
+                    "done-z",
                     "wip-z",
                     "wip-a",
                     "ready-z",
@@ -105,9 +107,7 @@ public sealed class TodoDatabaseReaderTests
                     "explicit-a",
                     "dep-open",
                     "blocked-by-dep-z",
-                    "blocked-by-dep-a",
-                    "done-z",
-                    "done-a"
+                    "blocked-by-dep-a"
                 ],
                 snapshot.Todos.Select(todo => todo.Id));
         }
@@ -118,7 +118,7 @@ public sealed class TodoDatabaseReaderTests
     }
 
     [Fact]
-    public void Read_OrdersDoneTodosByUpdatedAtThenIdDescending()
+    public void Read_OrdersDoneTodosOldestToNewestBeforeActiveTodos()
     {
         var directory = Directory.CreateTempSubdirectory();
         var dbPath = Path.Combine(directory.FullName, "session.db");
@@ -141,13 +141,13 @@ public sealed class TodoDatabaseReaderTests
 
             Assert.Equal(
                 [
-                    "pending-z",
-                    "done-a-new",
-                    "done-c-same",
-                    "done-b-same",
-                    "done-z-old",
+                    "done-x-invalid",
                     "done-y-missing",
-                    "done-x-invalid"
+                    "done-z-old",
+                    "done-b-same",
+                    "done-c-same",
+                    "done-a-new",
+                    "pending-z"
                 ],
                 snapshot.Todos.Select(todo => todo.Id));
         }
@@ -192,7 +192,7 @@ public sealed class TodoDatabaseReaderTests
     }
 
     [Fact]
-    public void Read_MovesDependencyBlockedTodoWhenDependencyCompletesAndHashChanges()
+    public void Read_UnblocksDependencyBlockedTodoWhenDependencyCompletesAndHashChanges()
     {
         var directory = Directory.CreateTempSubdirectory();
         var dbPath = Path.Combine(directory.FullName, "session.db");
@@ -214,7 +214,7 @@ public sealed class TodoDatabaseReaderTests
             var after = new TodoDatabaseReader().Read(dbPath);
 
             Assert.Equal(["target", "wait"], before.Todos.Select(todo => todo.Id));
-            Assert.Equal(["wait", "target"], after.Todos.Select(todo => todo.Id));
+            Assert.Equal(["target", "wait"], after.Todos.Select(todo => todo.Id));
             Assert.NotEqual(before.DataHash, after.DataHash);
             Assert.Empty(after.Todos.Single(todo => todo.Id == "wait").BlockedBy);
         }

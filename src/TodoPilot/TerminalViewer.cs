@@ -6,6 +6,7 @@ namespace TodoPilot;
 
 public sealed class TerminalViewer
 {
+    private const int PreferredCompletedContextBeforeFollowedTodo = 3;
     private readonly AppPaths _paths;
     private readonly SessionDiscovery _discovery;
     private readonly TodoDatabaseReader _todoReader = new();
@@ -107,7 +108,9 @@ public sealed class TerminalViewer
         var visibleTodoCount = 1;
         string? focusedTodoId = null;
         string? expandedTodoId = null;
+        string? manualFocusedTodoInitialStatus = null;
         DateTimeOffset? lastFocusNavigationAt = null;
+        var autoFollowWip = true;
         var resizeRequested = 0;
         var quitRequested = false;
         var switchSessionRequested = false;
@@ -163,10 +166,11 @@ public sealed class TerminalViewer
 
                 var initialNow = DateTimeOffset.Now;
                 var initialSnapshot = await initialSnapshotTask.ConfigureAwait(false);
-                focusedTodoId = SelectDefaultFocusedTodoId(initialSnapshot.Todos, focusedTodoId);
+                focusedTodoId = SelectAutoFollowedTodoId(initialSnapshot.Todos);
                 var initialDisplay = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, initialNow, focusMarkerTimeout);
-                renderedKey = CreateRenderKey(selectedSession, initialSnapshot, initialNow, initialDisplay);
-                var initialView = BuildTodoList(selectedSession, initialSnapshot, initialNow, scrollOffset, initialDisplay);
+                var initialContextCount = GetFocusedContextItemCountBefore(autoFollowWip);
+                renderedKey = CreateRenderKey(selectedSession, initialSnapshot, initialNow, initialDisplay, initialContextCount);
+                var initialView = BuildTodoList(selectedSession, initialSnapshot, initialNow, scrollOffset, initialDisplay, initialContextCount);
                 scrollOffset = initialView.Scroll.Offset;
                 visibleTodoCount = Math.Max(1, initialView.VisibleTodoCount);
                 ctx.UpdateTarget(initialView.Renderable);
@@ -178,20 +182,36 @@ public sealed class TerminalViewer
                     var now = DateTimeOffset.Now;
                     selectedSession = _discovery.RefreshMetadata(selectedSession);
                     var snapshot = _todoReader.Read(databasePath);
-                    focusedTodoId = SelectDefaultFocusedTodoId(snapshot.Todos, focusedTodoId);
+                    if (autoFollowWip)
+                    {
+                        focusedTodoId = SelectAutoFollowedTodoId(snapshot.Todos);
+                    }
+                    else
+                    {
+                        focusedTodoId = SelectManualFocusedTodoId(snapshot.Todos, focusedTodoId, manualFocusedTodoInitialStatus);
+                        if (focusedTodoId is null)
+                        {
+                            autoFollowWip = true;
+                            manualFocusedTodoInitialStatus = null;
+                            expandedTodoId = null;
+                            focusedTodoId = SelectAutoFollowedTodoId(snapshot.Todos);
+                        }
+                    }
+
                     if (expandedTodoId is not null && !snapshot.Todos.Any(todo => todo.Id == expandedTodoId))
                     {
                         expandedTodoId = null;
                     }
 
                     var display = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, now, focusMarkerTimeout);
-                    var renderKey = CreateRenderKey(selectedSession, snapshot, now, display);
+                    var focusedContextCount = GetFocusedContextItemCountBefore(autoFollowWip);
+                    var renderKey = CreateRenderKey(selectedSession, snapshot, now, display, focusedContextCount);
                     var resizeRequestedNow = Interlocked.Exchange(ref resizeRequested, 0) != 0;
                     var shouldRender = ShouldRender(renderedKey, renderKey, resizeRequestedNow);
 
                     if (shouldRender)
                     {
-                        var view = BuildTodoList(selectedSession, snapshot, now, scrollOffset, display);
+                        var view = BuildTodoList(selectedSession, snapshot, now, scrollOffset, display, focusedContextCount);
                         scrollOffset = view.Scroll.Offset;
                         visibleTodoCount = Math.Max(1, view.VisibleTodoCount);
                         ctx.UpdateTarget(view.Renderable);
@@ -221,12 +241,16 @@ public sealed class TerminalViewer
                                     break;
                                 case TodoListKeyAction.FocusPrevious:
                                     focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -1);
+                                    manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
+                                    autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
                                     renderedKey = null;
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.FocusNext:
                                     focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, 1);
+                                    manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
+                                    autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
                                     renderedKey = null;
                                     until = DateTimeOffset.UtcNow;
@@ -243,24 +267,32 @@ public sealed class TerminalViewer
                                     break;
                                 case TodoListKeyAction.PageNext:
                                     focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, visibleTodoCount);
+                                    manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
+                                    autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
                                     renderedKey = null;
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.PagePrevious:
                                     focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -visibleTodoCount);
+                                    manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
+                                    autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
                                     renderedKey = null;
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.FocusFirst:
                                     focusedTodoId = snapshot.Todos.FirstOrDefault()?.Id;
+                                    manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
+                                    autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
                                     renderedKey = null;
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.FocusLast:
                                     focusedTodoId = snapshot.Todos.LastOrDefault()?.Id;
+                                    manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
+                                    autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
                                     renderedKey = null;
                                     until = DateTimeOffset.UtcNow;
@@ -291,10 +323,19 @@ public sealed class TerminalViewer
         TodoSnapshot snapshot,
         DateTimeOffset now,
         int scrollOffset,
-        TodoListDisplayState displayState)
+        TodoListDisplayState displayState,
+        int focusedContextItemCountBefore)
     {
         var terminalSize = TerminalSize.GetCurrent();
-        return TerminalRenderer.BuildTodoListView(session, snapshot, now, terminalSize.Width, terminalSize.Height, scrollOffset, displayState: displayState);
+        return TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            now,
+            terminalSize.Width,
+            terminalSize.Height,
+            scrollOffset,
+            displayState: displayState,
+            focusedContextItemCountBefore: focusedContextItemCountBefore);
     }
 
     private static IRenderable BuildLoadingView(DiscoveredSession session, int spinnerFrame)
@@ -568,18 +609,28 @@ public sealed class TerminalViewer
             TerminalRenderer.HasDisplayedTimestamps(snapshot) ? now.ToUnixTimeSeconds() / 60 : "",
             TerminalRenderer.CreateTimestampKey(snapshot, now));
 
-    public static string CreateRenderKey(TodoSnapshot snapshot, DateTimeOffset now, TodoListDisplayState displayState) =>
+    public static string CreateRenderKey(
+        TodoSnapshot snapshot,
+        DateTimeOffset now,
+        TodoListDisplayState displayState,
+        int focusedContextItemCountBefore = 0) =>
         string.Join(
             '\u001f',
             CreateRenderKey(snapshot, now),
             displayState.FocusedTodoId ?? "",
             displayState.ExpandedTodoId ?? "",
-            displayState.ShowFocusMarker);
+            displayState.ShowFocusMarker,
+            focusedContextItemCountBefore);
 
-    public static string CreateRenderKey(DiscoveredSession session, TodoSnapshot snapshot, DateTimeOffset now, TodoListDisplayState displayState) =>
+    public static string CreateRenderKey(
+        DiscoveredSession session,
+        TodoSnapshot snapshot,
+        DateTimeOffset now,
+        TodoListDisplayState displayState,
+        int focusedContextItemCountBefore = 0) =>
         string.Join(
             '\u001f',
-            CreateRenderKey(snapshot, now, displayState),
+            CreateRenderKey(snapshot, now, displayState, focusedContextItemCountBefore),
             TerminalRenderer.GetSessionName(session),
             session.DisplayCwd);
 
@@ -600,6 +651,32 @@ public sealed class TerminalViewer
         return todos.FirstOrDefault(todo => todo.Status == "in_progress")?.Id
             ?? todos.FirstOrDefault(todo => todo.Status == "pending")?.Id
             ?? todos.FirstOrDefault()?.Id;
+    }
+
+    public static string? SelectAutoFollowedTodoId(IReadOnlyList<TodoItem> todos) =>
+        todos.FirstOrDefault(todo => todo.Status == "in_progress")?.Id
+        ?? todos.FirstOrDefault(todo => todo.Status == "pending")?.Id
+        ?? todos.FirstOrDefault()?.Id;
+
+    public static string? SelectManualFocusedTodoId(
+        IReadOnlyList<TodoItem> todos,
+        string? currentFocusedTodoId,
+        string? initialStatus)
+    {
+        if (currentFocusedTodoId is null)
+        {
+            return null;
+        }
+
+        var current = todos.FirstOrDefault(todo => todo.Id == currentFocusedTodoId);
+        if (current is null)
+        {
+            return null;
+        }
+
+        return !IsDoneStatus(initialStatus) && IsDoneStatus(current.Status)
+            ? null
+            : current.Id;
     }
 
     public static string? MoveFocusedTodoId(IReadOnlyList<TodoItem> todos, string? currentFocusedTodoId, int delta)
@@ -623,6 +700,17 @@ public sealed class TerminalViewer
 
     public static bool ShouldRender(string? renderedKey, string candidateKey, bool resizeRequested) =>
         resizeRequested || !StringComparer.Ordinal.Equals(renderedKey, candidateKey);
+
+    private static int GetFocusedContextItemCountBefore(bool autoFollowWip) =>
+        autoFollowWip ? PreferredCompletedContextBeforeFollowedTodo : 0;
+
+    private static string? GetTodoStatus(IReadOnlyList<TodoItem> todos, string? todoId) =>
+        todoId is null
+            ? null
+            : todos.FirstOrDefault(todo => todo.Id == todoId)?.Status;
+
+    private static bool IsDoneStatus(string? status) =>
+        string.Equals(status, "done", StringComparison.Ordinal);
 
     public static bool ShouldRenderSessionSelection(TerminalSize? renderedSize, TerminalSize currentSize, bool stateChanged, bool resizeRequested) =>
         stateChanged || resizeRequested || renderedSize != currentSize;

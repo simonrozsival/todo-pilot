@@ -81,8 +81,9 @@ public sealed class TodoDatabaseReader
                 })
                 .OrderBy(GetWorkflowRank)
                 .ThenBy(GetDoneTimestampBucket)
-                .ThenByDescending(GetDoneUpdatedAt)
-                .ThenByDescending(todo => todo.Id, StringComparer.Ordinal)
+                .ThenBy(GetDoneUpdatedAt)
+                .ThenBy(GetDoneIdSortKey, StringComparer.Ordinal)
+                .ThenByDescending(GetActiveIdSortKey, StringComparer.Ordinal)
                 .ToArray();
 
             return new TodoSnapshot(TodoReadState.Available, todos, ComputeHash(todos), $"{todos.Length} todo(s)");
@@ -150,12 +151,12 @@ public sealed class TodoDatabaseReader
     private static int GetWorkflowRank(TodoItem todo) =>
         todo.Status switch
         {
-            "in_progress" => 0,
-            "pending" when todo.BlockedBy.Count == 0 => 1,
-            "pending" => 2,
-            "done" => 4,
-            _ when todo.BlockedBy.Count == 0 => 1,
-            _ => 2
+            "done" => 0,
+            "in_progress" => 1,
+            "pending" when todo.BlockedBy.Count == 0 => 2,
+            "pending" => 3,
+            _ when todo.BlockedBy.Count == 0 => 2,
+            _ => 3
         };
 
     private static int GetDoneTimestampBucket(TodoItem todo)
@@ -165,7 +166,7 @@ public sealed class TodoDatabaseReader
             return 0;
         }
 
-        return TryParseTimestamp(todo.UpdatedAt, out _) ? 0 : 1;
+        return TryParseTimestamp(todo.UpdatedAt, out _) ? 1 : 0;
     }
 
     private static DateTimeOffset GetDoneUpdatedAt(TodoItem todo) =>
@@ -175,6 +176,12 @@ public sealed class TodoDatabaseReader
 
     private static bool IsDone(TodoItem todo) =>
         string.Equals(todo.Status, "done", StringComparison.Ordinal);
+
+    private static string GetDoneIdSortKey(TodoItem todo) =>
+        IsDone(todo) ? todo.Id : "";
+
+    private static string GetActiveIdSortKey(TodoItem todo) =>
+        IsDone(todo) ? "" : todo.Id;
 
     private static bool TryParseTimestamp(string? value, out DateTimeOffset timestamp)
     {
