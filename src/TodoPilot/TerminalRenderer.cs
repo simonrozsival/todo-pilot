@@ -15,6 +15,7 @@ public static class TerminalRenderer
     private const string DetailValueContinuationIndent = " ";
     private const string TimestampStyle = "grey";
     private const string MutedTodoStyle = "dim";
+    private const string DependencyMutedTodoStyle = "grey35";
     private const string BlockedTodoStyle = "orange1";
     private static readonly TimeSpan FreshCompletionWindow = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan JustNowWindow = TimeSpan.FromMinutes(1);
@@ -25,7 +26,8 @@ public static class TerminalRenderer
         ["description"] = 0,
         ["id"] = 10,
         ["status"] = 20,
-        ["dependencies"] = 30
+        ["needs"] = 30,
+        ["blocks"] = 40
     };
 
     public static IRenderable BuildTodoList(
@@ -181,6 +183,7 @@ public static class TerminalRenderer
             return rows;
         }
 
+        var dependencyContext = CreateExpandedDependencyContext(snapshot, displayState.ExpandedTodoId);
         if (snapshot.Todos.Count == 0)
         {
             AddWrappedBodyMarkup(rows, TodoSnapshot.EmptyMessage, contentWidth, TimestampStyle, todoId: null);
@@ -191,7 +194,15 @@ public static class TerminalRenderer
             {
                 var focused = displayState.ShowFocusMarker
                     && string.Equals(todo.Id, displayState.FocusedTodoId, StringComparison.Ordinal);
-                var todoLines = FormatTodoLines(todo, renderedAt, contentWidth);
+                var shouldDim = dependencyContext.ShouldDim(todo.Id);
+                var todoLines = FormatTodoLines(
+                    todo,
+                    renderedAt,
+                    contentWidth,
+                    muteCompletedTodo: shouldDim,
+                    styleOverride: shouldDim ? DependencyMutedTodoStyle : null,
+                    timestampStyle: shouldDim ? DependencyMutedTodoStyle : TimestampStyle);
+
                 for (var i = 0; i < todoLines.Count; i++)
                 {
                     var padding = focused && i == 0 ? $"[white]›[/] " : Padding();
@@ -200,7 +211,7 @@ public static class TerminalRenderer
 
                 if (string.Equals(todo.Id, displayState.ExpandedTodoId, StringComparison.Ordinal))
                 {
-                    AddExpandedTodoRows(rows, todo, contentWidth);
+                    AddExpandedTodoRows(rows, todo, contentWidth, dependencyContext);
                 }
             }
         }
@@ -208,7 +219,7 @@ public static class TerminalRenderer
         return rows;
     }
 
-    private static void AddExpandedTodoRows(List<ListLine> rows, TodoItem todo, int contentWidth)
+    private static void AddExpandedTodoRows(List<ListLine> rows, TodoItem todo, int contentWidth, ExpandedDependencyContext dependencyContext)
     {
         var detailRows = new List<ExpandedDetailRow>();
         if (!string.IsNullOrWhiteSpace(todo.Description))
@@ -219,15 +230,60 @@ public static class TerminalRenderer
         AddExpandedDetail(detailRows, "id", todo.Id);
         AddExpandedDetail(detailRows, "status", FormatStatusForDisplay(todo.Status));
 
-        if (todo.Dependencies.Count > 0)
+        if (dependencyContext.Needs.Count > 0)
         {
-            AddExpandedDetail(detailRows, "dependencies", string.Join(", ", todo.Dependencies));
+            AddExpandedDetail(detailRows, "needs", string.Join(", ", dependencyContext.Needs));
+        }
+
+        if (dependencyContext.Blocks.Count > 0)
+        {
+            AddExpandedDetail(detailRows, "blocks", string.Join(", ", dependencyContext.Blocks));
         }
 
         foreach (var detail in SortExpandedDetails(detailRows))
         {
             AddWrappedDetailMarkup(rows, detail.Key, detail.Value, contentWidth, todo.Id);
         }
+    }
+
+    private static ExpandedDependencyContext CreateExpandedDependencyContext(TodoSnapshot snapshot, string? expandedTodoId)
+    {
+        if (snapshot.State != TodoReadState.Available || string.IsNullOrWhiteSpace(expandedTodoId))
+        {
+            return ExpandedDependencyContext.Empty;
+        }
+
+        var todosById = snapshot.Todos.ToDictionary(todo => todo.Id, StringComparer.Ordinal);
+        if (!todosById.TryGetValue(expandedTodoId, out var expandedTodo))
+        {
+            return ExpandedDependencyContext.Empty;
+        }
+
+        var relatedIds = new HashSet<string>(StringComparer.Ordinal) { expandedTodoId };
+        var needs = expandedTodo.Dependencies
+            .Distinct(StringComparer.Ordinal)
+            .Select(dependencyId =>
+            {
+                if (todosById.TryGetValue(dependencyId, out var dependency))
+                {
+                    relatedIds.Add(dependency.Id);
+                    return FormatDependencyTitle(dependency);
+                }
+
+                return $"{dependencyId} (missing)";
+            })
+            .ToArray();
+        var blocks = snapshot.Todos
+            .Where(todo => todo.Dependencies.Contains(expandedTodoId, StringComparer.Ordinal))
+            .Select(todo =>
+            {
+                relatedIds.Add(todo.Id);
+                return todo.Title;
+            })
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+
+        return new ExpandedDependencyContext(needs, blocks, relatedIds);
     }
 
     private static void AddExpandedDetail(List<ExpandedDetailRow> rows, string key, string? value)
@@ -238,6 +294,22 @@ public static class TerminalRenderer
         }
 
         rows.Add(new ExpandedDetailRow(key, value.Trim(), rows.Count));
+    }
+
+    private static string FormatDependencyTitle(TodoItem todo) =>
+        todo.Status == "done" ? AddStrikethrough(todo.Title) : todo.Title;
+
+    private static string AddStrikethrough(string value)
+    {
+        const char strike = '\u0336';
+        var builder = new StringBuilder(value.Length * 2);
+        foreach (var rune in value.EnumerateRunes())
+        {
+            builder.Append(rune);
+            builder.Append(strike);
+        }
+
+        return builder.ToString();
     }
 
     private static IEnumerable<ExpandedDetailRow> SortExpandedDetails(IEnumerable<ExpandedDetailRow> rows) =>
@@ -396,12 +468,23 @@ public static class TerminalRenderer
 
     public static IReadOnlyList<string> FormatTodoLines(TodoItem todo, DateTimeOffset now, int contentWidth, bool muteCompletedTodo)
     {
+        return FormatTodoLines(todo, now, contentWidth, muteCompletedTodo, styleOverride: null, timestampStyle: TimestampStyle);
+    }
+
+    private static IReadOnlyList<string> FormatTodoLines(
+        TodoItem todo,
+        DateTimeOffset now,
+        int contentWidth,
+        bool muteCompletedTodo,
+        string? styleOverride,
+        string timestampStyle)
+    {
         return todo.Status switch
         {
-            "done" => FormatCompletedTodoLines(todo, now, contentWidth, muteCompletedTodo),
-            "in_progress" => FormatInProgressTodoLines(todo, now, contentWidth),
-            "blocked" => FormatBlockedTodoLines(todo, now, contentWidth),
-            _ => FormatPendingTodoLines(todo, now, contentWidth)
+            "done" => FormatCompletedTodoLines(todo, now, contentWidth, muteCompletedTodo, styleOverride, timestampStyle),
+            "in_progress" => FormatInProgressTodoLines(todo, now, contentWidth, styleOverride, timestampStyle),
+            "blocked" => FormatBlockedTodoLines(todo, now, contentWidth, styleOverride, timestampStyle),
+            _ => FormatPendingTodoLines(todo, now, contentWidth, styleOverride, timestampStyle)
         };
     }
 
@@ -524,36 +607,57 @@ public static class TerminalRenderer
         return batches;
     }
 
-    private static IReadOnlyList<string> FormatCompletedTodoLines(TodoItem todo, DateTimeOffset now, int contentWidth, bool muted)
+    private static IReadOnlyList<string> FormatCompletedTodoLines(
+        TodoItem todo,
+        DateTimeOffset now,
+        int contentWidth,
+        bool muted,
+        string? styleOverride,
+        string timestampStyle)
     {
-        var style = !muted && IsFreshTimestamp(todo.UpdatedAt, now)
+        var style = styleOverride ?? (!muted && IsFreshTimestamp(todo.UpdatedAt, now)
             ? "bold green"
-            : MutedTodoStyle;
+            : MutedTodoStyle);
         var lines = FormatStyledTodoLines("[✓]", todo.Title, contentWidth, style).ToList();
-        return AppendGraySuffix(lines, FormatDoneTimestamp(todo.UpdatedAt, now), contentWidth);
+        return AppendStyledSuffix(lines, FormatDoneTimestamp(todo.UpdatedAt, now), contentWidth, timestampStyle);
     }
 
-    private static IReadOnlyList<string> FormatInProgressTodoLines(TodoItem todo, DateTimeOffset now, int contentWidth)
+    private static IReadOnlyList<string> FormatInProgressTodoLines(
+        TodoItem todo,
+        DateTimeOffset now,
+        int contentWidth,
+        string? styleOverride,
+        string timestampStyle)
     {
-        var lines = FormatStyledTodoLines("[•]", todo.Title, contentWidth, "yellow").ToList();
-        return AppendGraySuffix(lines, FormatStartedTimestamp(todo.UpdatedAt, now), contentWidth);
+        var lines = FormatStyledTodoLines("[•]", todo.Title, contentWidth, styleOverride ?? "yellow").ToList();
+        return AppendStyledSuffix(lines, FormatStartedTimestamp(todo.UpdatedAt, now), contentWidth, timestampStyle);
     }
 
-    private static IReadOnlyList<string> FormatPendingTodoLines(TodoItem todo, DateTimeOffset now, int contentWidth)
+    private static IReadOnlyList<string> FormatPendingTodoLines(
+        TodoItem todo,
+        DateTimeOffset now,
+        int contentWidth,
+        string? styleOverride,
+        string timestampStyle)
     {
-        var lines = FormatStyledTodoLines("[ ]", todo.Title, contentWidth, style: null).ToList();
-        return AppendGraySuffix(lines, FormatAddedTimestamp(todo.CreatedAt, now), contentWidth);
+        var lines = FormatStyledTodoLines("[ ]", todo.Title, contentWidth, styleOverride).ToList();
+        return AppendStyledSuffix(lines, FormatAddedTimestamp(todo.CreatedAt, now), contentWidth, timestampStyle);
     }
 
-    private static IReadOnlyList<string> FormatBlockedTodoLines(TodoItem todo, DateTimeOffset now, int contentWidth)
+    private static IReadOnlyList<string> FormatBlockedTodoLines(
+        TodoItem todo,
+        DateTimeOffset now,
+        int contentWidth,
+        string? styleOverride,
+        string timestampStyle)
     {
-        var lines = FormatStyledTodoLines("[⊘]", todo.Title, contentWidth, BlockedTodoStyle).ToList();
-        return AppendGraySuffix(lines, FormatAddedTimestamp(todo.CreatedAt, now), contentWidth);
+        var lines = FormatStyledTodoLines("[⊘]", todo.Title, contentWidth, styleOverride ?? BlockedTodoStyle).ToList();
+        return AppendStyledSuffix(lines, FormatAddedTimestamp(todo.CreatedAt, now), contentWidth, timestampStyle);
     }
 
     private static string FormatStatusForDisplay(string status) => status;
 
-    private static IReadOnlyList<string> AppendGraySuffix(List<string> lines, string? suffix, int contentWidth)
+    private static IReadOnlyList<string> AppendStyledSuffix(List<string> lines, string? suffix, int contentWidth, string style)
     {
         if (suffix is null || lines.Count == 0)
         {
@@ -563,7 +667,7 @@ public static class TerminalRenderer
         var lastLinePlain = RemoveMarkupForLength(lines[^1]);
         if (DisplayLength(lastLinePlain) + 1 + suffix.Length <= contentWidth)
         {
-            var escapedSuffix = $"[{TimestampStyle}]{Markup.Escape(suffix)}[/]";
+            var escapedSuffix = $"[{style}]{Markup.Escape(suffix)}[/]";
             lines[^1] = $"{lines[^1]} {escapedSuffix}";
         }
         else
@@ -571,7 +675,7 @@ public static class TerminalRenderer
             var suffixWidth = Math.Max(1, contentWidth - DisplayLength(ContinuationIndent));
             foreach (var line in WrapText(suffix, suffixWidth, suffixWidth))
             {
-                lines.Add($"{ContinuationIndent}[{TimestampStyle}]{Markup.Escape(line)}[/]");
+                lines.Add($"{ContinuationIndent}[{style}]{Markup.Escape(line)}[/]");
             }
         }
 
@@ -957,6 +1061,17 @@ public static class TerminalRenderer
     private sealed record ExpandedDetailRow(string Key, string Value, int Sequence);
 
     private sealed record ItemStart(string Id, int FirstLineIndex);
+
+    private sealed record ExpandedDependencyContext(
+        IReadOnlyList<string> Needs,
+        IReadOnlyList<string> Blocks,
+        IReadOnlySet<string> RelatedIds)
+    {
+        public static ExpandedDependencyContext Empty { get; } = new([], [], new HashSet<string>(StringComparer.Ordinal));
+
+        public bool ShouldDim(string todoId) =>
+            RelatedIds.Count > 0 && !RelatedIds.Contains(todoId);
+    }
 
     public sealed record ListLayoutContent(
         IReadOnlyList<string> Lines,

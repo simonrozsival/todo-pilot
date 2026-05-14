@@ -5,6 +5,16 @@ public sealed class TerminalRendererTests
     private static string LocalClock(string timestamp) =>
         DateTimeOffset.Parse(timestamp).ToLocalTime().ToString("HH:mm");
 
+    private static string EscapedStrikethrough(string value) =>
+        string.Concat(value.Select(ch => $"{MarkupChar(ch)}\u0336"));
+
+    private static string MarkupChar(char value) => value switch
+    {
+        '[' => "[[",
+        ']' => "]]",
+        _ => value.ToString()
+    };
+
     [Fact]
     public void BuildTodoList_DoesNotTreatStatusBadgesAsMarkupTags()
     {
@@ -443,7 +453,7 @@ public sealed class TerminalRendererTests
         Assert.Contains("[grey]description:[/] Show details inline.", rendered, StringComparison.Ordinal);
         Assert.Contains("[grey]id:[/] todo-1", rendered, StringComparison.Ordinal);
         Assert.Contains("[grey]status:[/] pending", rendered, StringComparison.Ordinal);
-        Assert.Contains("[grey]dependencies:[/] todo-0", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]needs:[/] todo-0 (missing)", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("[grey]created:[/]", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("[grey]updated:[/]", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("[grey]inbox:[/]", rendered, StringComparison.Ordinal);
@@ -454,9 +464,72 @@ public sealed class TerminalRendererTests
         Assert.DoesNotContain("[grey]checkpoint:[/]", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("[grey]description: Show details inline.[/]", rendered, StringComparison.Ordinal);
         Assert.True(rendered.IndexOf("[grey]description:[/]", StringComparison.Ordinal) < rendered.IndexOf("[grey]id:[/]", StringComparison.Ordinal));
-        Assert.True(rendered.IndexOf("[grey]status:[/]", StringComparison.Ordinal) < rendered.IndexOf("[grey]dependencies:[/]", StringComparison.Ordinal));
+        Assert.True(rendered.IndexOf("[grey]status:[/]", StringComparison.Ordinal) < rendered.IndexOf("[grey]needs:[/]", StringComparison.Ordinal));
         Assert.Equal(1, view.VisibleTodoCount);
         Assert.True(view.Scroll.TotalLines > 1);
+    }
+
+    [Fact]
+    public void BuildTodoListView_RendersDependencyContextWithTodoTitlesAndDimsUnrelatedRows()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem("dependency", "Dependency [setup]", "done", null, null, "2026-05-07T12:00:00+02:00", []),
+                new TodoItem("expanded", "Expanded item", "pending", "Show dependency context.", null, null, ["dependency"]),
+                new TodoItem("dependent", "Dependent item", "pending", null, null, null, ["expanded"]),
+                new TodoItem("unrelated", "Unrelated old done", "done", null, null, "2026-05-07T11:00:00+02:00", [])
+            ],
+            "hash",
+            "4 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 100,
+            consoleHeight: 30,
+            scrollOffset: 0,
+            displayState: new TodoListDisplayState("expanded", "expanded", ShowFocusMarker: true));
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains($"[grey]needs:[/] {EscapedStrikethrough("Dependency [setup]")}", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]blocks:[/] Dependent item", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]dependencies:[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey35][[✓]] Unrelated old done[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey35]done 1h ago", rendered, StringComparison.Ordinal);
+        Assert.Contains("[[ ]] Dependent item", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[dim][[ ]] Dependent item", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildTodoListView_DimsOtherRowsWhenExpandedTodoHasNoDependencies()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem("other", "Other item", "pending", null, null, null, []),
+                new TodoItem("expanded", "Expanded item", "pending", "Show details only.", null, null, [])
+            ],
+            "hash",
+            "2 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 100,
+            consoleHeight: 30,
+            scrollOffset: 0,
+            displayState: new TodoListDisplayState("expanded", "expanded", ShowFocusMarker: true));
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains("[grey35][[ ]] Other item[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[white]›[/] [[ ]] Expanded item", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]needs:[/]", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]blocks:[/]", rendered, StringComparison.Ordinal);
     }
 
     [Fact]
