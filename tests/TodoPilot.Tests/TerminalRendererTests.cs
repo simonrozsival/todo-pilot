@@ -285,7 +285,7 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
-    public void FormatTodoLine_RendersBlockedStatusAsRegularPending()
+    public void FormatTodoLine_RendersExplicitBlockedStatusAsOrangeBlocked()
     {
         const string createdAt = "2026-05-06T13:30:00+02:00";
         var todo = new TodoItem(
@@ -299,9 +299,9 @@ public sealed class TerminalRendererTests
 
         var line = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T13:42:00+02:00"));
 
-        Assert.StartsWith("[[ ]] Blocked todo", line, StringComparison.Ordinal);
+        Assert.StartsWith("[orange1][[⊘]] Blocked todo[/]", line, StringComparison.Ordinal);
         Assert.DoesNotContain("[red]", line, StringComparison.Ordinal);
-        Assert.DoesNotContain("[[!]]", line, StringComparison.Ordinal);
+        Assert.DoesNotContain("[[ ]]", line, StringComparison.Ordinal);
         Assert.Contains($"[grey]added 12m ago ⋅ {LocalClock(createdAt)}[/]", line, StringComparison.Ordinal);
     }
 
@@ -439,7 +439,7 @@ public sealed class TerminalRendererTests
             displayState: new TodoListDisplayState("todo-1", "todo-1", ShowFocusMarker: true));
 
         var rendered = string.Join('\n', view.Lines);
-        Assert.Contains("[blue]›[/] [[ ]] Expand details", rendered, StringComparison.Ordinal);
+        Assert.Contains("[white]›[/] [[ ]] Expand details", rendered, StringComparison.Ordinal);
         Assert.Contains("[grey]description:[/] Show details inline.", rendered, StringComparison.Ordinal);
         Assert.Contains("[grey]id:[/] todo-1", rendered, StringComparison.Ordinal);
         Assert.Contains("[grey]status:[/] pending", rendered, StringComparison.Ordinal);
@@ -457,6 +457,40 @@ public sealed class TerminalRendererTests
         Assert.True(rendered.IndexOf("[grey]status:[/]", StringComparison.Ordinal) < rendered.IndexOf("[grey]dependencies:[/]", StringComparison.Ordinal));
         Assert.Equal(1, view.VisibleTodoCount);
         Assert.True(view.Scroll.TotalLines > 1);
+    }
+
+    [Fact]
+    public void BuildTodoListView_ShowsExplicitBlockedStatusInExpandedDetails()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem(
+                    "blocked",
+                    "Blocked item",
+                    "blocked",
+                    "Waiting on an external decision.",
+                    "2026-05-07T12:00:00+02:00",
+                    null,
+                    [])
+            ],
+            "hash",
+            "1 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 100,
+            consoleHeight: 30,
+            scrollOffset: 0,
+            displayState: new TodoListDisplayState("blocked", "blocked", ShowFocusMarker: true));
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains("[white]›[/] [orange1][[⊘]] Blocked item[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]status:[/] blocked", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]status:[/] pending", rendered, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -478,7 +512,7 @@ public sealed class TerminalRendererTests
             scrollOffset: 0,
             displayState: new TodoListDisplayState("todo-1"));
 
-        Assert.DoesNotContain("[blue]›[/]", string.Join('\n', view.Lines), StringComparison.Ordinal);
+        Assert.DoesNotContain("[white]›[/]", string.Join('\n', view.Lines), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -544,7 +578,7 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
-    public void BuildTodoListView_DoesNotSurfaceBlockedStatusInExpandedDetails()
+    public void BuildTodoListView_RendersBlockedStatusInExpandedDetails()
     {
         var session = CreateSession(metadataCwd: null, registryCwd: null);
         var snapshot = new TodoSnapshot(
@@ -564,8 +598,8 @@ public sealed class TerminalRendererTests
             new TodoListDisplayState("todo-1", "todo-1", ShowFocusMarker: true));
 
         var rendered = string.Join('\n', view.Lines);
-        Assert.Contains("[grey]status:[/] pending", rendered, StringComparison.Ordinal);
-        Assert.DoesNotContain("status: blocked", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey]status:[/] blocked", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[grey]status:[/] pending", rendered, StringComparison.Ordinal);
     }
 
     [Fact]

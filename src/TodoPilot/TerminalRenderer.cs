@@ -15,6 +15,7 @@ public static class TerminalRenderer
     private const string DetailValueContinuationIndent = " ";
     private const string TimestampStyle = "grey";
     private const string MutedTodoStyle = "dim";
+    private const string BlockedTodoStyle = "orange1";
     private static readonly TimeSpan FreshCompletionWindow = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan JustNowWindow = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan TodoBatchWindow = TimeSpan.FromSeconds(5);
@@ -193,7 +194,7 @@ public static class TerminalRenderer
                 var todoLines = FormatTodoLines(todo, renderedAt, contentWidth);
                 for (var i = 0; i < todoLines.Count; i++)
                 {
-                    var padding = focused && i == 0 ? $"[blue]›[/] " : Padding();
+                    var padding = focused && i == 0 ? $"[white]›[/] " : Padding();
                     rows.Add(new ListLine($"{padding}{todoLines[i]}", todo.Id));
                 }
 
@@ -399,6 +400,7 @@ public static class TerminalRenderer
         {
             "done" => FormatCompletedTodoLines(todo, now, contentWidth, muteCompletedTodo),
             "in_progress" => FormatInProgressTodoLines(todo, now, contentWidth),
+            "blocked" => FormatBlockedTodoLines(todo, now, contentWidth),
             _ => FormatPendingTodoLines(todo, now, contentWidth)
         };
     }
@@ -543,8 +545,13 @@ public static class TerminalRenderer
         return AppendGraySuffix(lines, FormatAddedTimestamp(todo.CreatedAt, now), contentWidth);
     }
 
-    private static string FormatStatusForDisplay(string status) =>
-        string.Equals(status, "blocked", StringComparison.Ordinal) ? "pending" : status;
+    private static IReadOnlyList<string> FormatBlockedTodoLines(TodoItem todo, DateTimeOffset now, int contentWidth)
+    {
+        var lines = FormatStyledTodoLines("[⊘]", todo.Title, contentWidth, BlockedTodoStyle).ToList();
+        return AppendGraySuffix(lines, FormatAddedTimestamp(todo.CreatedAt, now), contentWidth);
+    }
+
+    private static string FormatStatusForDisplay(string status) => status;
 
     private static IReadOnlyList<string> AppendGraySuffix(List<string> lines, string? suffix, int contentWidth)
     {
