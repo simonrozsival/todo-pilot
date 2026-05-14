@@ -19,7 +19,7 @@ dnx todo-pilot uninstall
 
 The install flow lets you choose user scope (`~/.copilot/extensions/todo-pilot`) or project scope (`.github/extensions/todo-pilot` under the git root).
 
-The session picker shows only sessions whose companion extension process is still running by default. Press Ctrl+A to switch between that narrowed view and all registered sessions.
+The session picker refreshes while open, shows each session directory, and prioritizes sessions from the current directory. It shows only sessions whose companion extension process is still running by default; press Ctrl+A to switch between that narrowed view and all registered sessions. Sessions already open in another todo-pilot viewer remain visible, but are marked and sorted lower.
 After choosing a session, press Ctrl+X from the TODO view to return to the session picker.
 
 ## Packaging

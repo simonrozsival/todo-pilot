@@ -22,6 +22,8 @@ public sealed class AppPaths
 
     public string RegistrySessionsDirectory => Path.Combine(CopilotDirectory, ExtensionName, "sessions");
 
+    public string ViewerAttachmentsDirectory => Path.Combine(CopilotDirectory, ExtensionName, "viewers");
+
     public string UserExtensionDirectory => Path.Combine(CopilotDirectory, "extensions", ExtensionName);
 
     public string ProjectRoot => FindProjectRoot(CurrentDirectory);
@@ -33,6 +35,9 @@ public sealed class AppPaths
 
     public string GetSessionDatabasePath(string sessionId) =>
         Path.Combine(SessionStateDirectory, sessionId, "session.db");
+
+    public string GetViewerAttachmentPath(string sessionId, int pid) =>
+        Path.Combine(ViewerAttachmentsDirectory, $"{sessionId}.{pid}.json");
 
     public static string FindProjectRoot(string startDirectory)
     {

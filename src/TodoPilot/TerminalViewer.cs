@@ -1,6 +1,7 @@
 using Spectre.Console;
 using Spectre.Console.Rendering;
 using System.Globalization;
+using System.Text.Json;
 
 namespace TodoPilot;
 
@@ -52,7 +53,7 @@ public sealed class TerminalViewer
             {
                 while (!linkedCts.IsCancellationRequested)
                 {
-                    var selectedSession = PromptForSession(sessions, linkedCts.Token);
+                    var selectedSession = PromptForSession(sessions, staleAfter, refreshInterval, linkedCts.Token);
                     if (selectedSession is null)
                     {
                         break;
@@ -115,6 +116,7 @@ public sealed class TerminalViewer
         var quitRequested = false;
         var switchSessionRequested = false;
         using var resizeWatcher = TerminalResizeWatcher.Create(() => Interlocked.Exchange(ref resizeRequested, 1));
+        using var viewerAttachment = new ViewerAttachmentRegistration(_paths, selectedSession.Registry.SessionId);
         var databasePath = _paths.GetSessionDatabasePath(selectedSession.Registry.SessionId);
         var initialSnapshotTask = Task.Run(() => _todoReader.Read(databasePath), cancellationToken);
         var initialRenderable = BuildLoadingView(selectedSession, spinnerFrame: 0);
@@ -131,6 +133,7 @@ public sealed class TerminalViewer
                     && !quitRequested
                     && !switchSessionRequested)
                 {
+                    viewerAttachment.Refresh(DateTimeOffset.UtcNow);
                     while (TerminalKeyboard.TryReadKey(out var key))
                     {
                         var keyAction = TerminalKeyboard.MapTodoListKey(key);
@@ -180,6 +183,7 @@ public sealed class TerminalViewer
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     var now = DateTimeOffset.Now;
+                    viewerAttachment.Refresh(now.ToUniversalTime());
                     selectedSession = _discovery.RefreshMetadata(selectedSession);
                     var snapshot = _todoReader.Read(databasePath);
                     if (autoFollowWip)
@@ -356,8 +360,13 @@ public sealed class TerminalViewer
         return new TodoListDisplayState(focusedTodoId, expandedTodoId, showFocusMarker);
     }
 
-    private static DiscoveredSession? PromptForSession(IReadOnlyList<DiscoveredSession> sessions, CancellationToken cancellationToken)
+    private DiscoveredSession? PromptForSession(
+        IReadOnlyList<DiscoveredSession> initialSessions,
+        TimeSpan staleAfter,
+        TimeSpan refreshInterval,
+        CancellationToken cancellationToken)
     {
+        var sessions = initialSessions;
         var selectedIndex = 0;
         var scrollOffset = 0;
         var filter = "";
@@ -366,26 +375,42 @@ public sealed class TerminalViewer
         var showOnlyRunningExtensionSessions = true;
         var resizeRequested = 1;
         var shouldRender = true;
+        var renderedDataKey = "";
+        var nextRefreshAt = DateTimeOffset.UtcNow + refreshInterval;
         TerminalSize? renderedSize = null;
         using var resizeWatcher = TerminalResizeWatcher.Create(() => Interlocked.Exchange(ref resizeRequested, 1));
 
         while (!cancellationToken.IsCancellationRequested)
         {
+            var previousFilteredSessions = FilterSessions(GetSessionsForView(sessions, showOnlyRunningExtensionSessions), filter);
+            var selectedSessionId = previousFilteredSessions.Count == 0
+                ? null
+                : previousFilteredSessions[Math.Clamp(selectedIndex, 0, previousFilteredSessions.Count - 1)].Registry.SessionId;
+            var now = DateTimeOffset.UtcNow;
+            if (now >= nextRefreshAt)
+            {
+                sessions = _discovery.Discover(now, staleAfter);
+                nextRefreshAt = now + refreshInterval;
+            }
+
             var filteredSessions = FilterSessions(
                 GetSessionsForView(sessions, showOnlyRunningExtensionSessions),
                 filter);
+            selectedIndex = PreserveSelectedSessionIndex(filteredSessions, selectedSessionId, selectedIndex);
             if (filteredSessions.Count == 0)
             {
                 selectedIndex = 0;
                 scrollOffset = 0;
             }
-            else
-            {
-                selectedIndex = Math.Clamp(selectedIndex, 0, filteredSessions.Count - 1);
-            }
 
             var terminalSize = TerminalSize.GetCurrent();
             var resizeRequestedNow = Interlocked.Exchange(ref resizeRequested, 0) != 0;
+            var dataKey = CreateSessionSelectionDataKey(filteredSessions);
+            if (!StringComparer.Ordinal.Equals(renderedDataKey, dataKey))
+            {
+                shouldRender = true;
+            }
+
             if (ShouldRenderSessionSelection(renderedSize, terminalSize, shouldRender, resizeRequestedNow))
             {
                 var view = BuildSessionSelectionView(
@@ -403,6 +428,7 @@ public sealed class TerminalViewer
                 Console.Write("\u001b[H\u001b[2J");
                 AnsiConsole.Write(view.Renderable);
                 renderedSize = terminalSize;
+                renderedDataKey = dataKey;
                 shouldRender = false;
             }
 
@@ -599,6 +625,41 @@ public sealed class TerminalViewer
             .ToArray();
     }
 
+    public static int PreserveSelectedSessionIndex(
+        IReadOnlyList<DiscoveredSession> sessions,
+        string? selectedSessionId,
+        int selectedIndex)
+    {
+        if (!string.IsNullOrWhiteSpace(selectedSessionId))
+        {
+            for (var i = 0; i < sessions.Count; i++)
+            {
+                if (string.Equals(sessions[i].Registry.SessionId, selectedSessionId, StringComparison.OrdinalIgnoreCase))
+                {
+                    return i;
+                }
+            }
+        }
+
+        return sessions.Count == 0
+            ? 0
+            : Math.Clamp(selectedIndex, 0, sessions.Count - 1);
+    }
+
+    public static string CreateSessionSelectionDataKey(IReadOnlyList<DiscoveredSession> sessions) =>
+        string.Join(
+            '\u001f',
+            sessions.Select(session => string.Join(
+                '\u001e',
+                session.Registry.SessionId,
+                TerminalRenderer.GetSessionName(session),
+                session.DisplayCwd,
+                session.Registry.LastSeen,
+                session.IsStale,
+                session.IsExtensionProcessRunning,
+                session.HasAttachedViewer,
+                session.AttachedViewerCount)));
+
     public static string CreateRenderKey(TodoSnapshot snapshot, DateTimeOffset now) =>
         string.Join(
             '\u001f',
@@ -785,6 +846,7 @@ public sealed class TerminalViewer
             session.Metadata?.Repository,
             session.Metadata?.Branch,
             session.Metadata?.Summary,
+            session.HasAttachedViewer ? "attached viewed elsewhere todo-pilot viewer" : "",
             session.IsExtensionProcessRunning ? "running extension process" : "stopped extension process",
             session.IsStale ? "stale" : "active");
 
@@ -836,12 +898,33 @@ public sealed class TerminalViewer
         }
 
         metadata.Add(state);
+        var cwd = GetSessionCwdMetadataText(session);
+        if (cwd is not null)
+        {
+            metadata.Add(cwd);
+        }
+
+        if (session.HasAttachedViewer)
+        {
+            metadata.Add(session.AttachedViewerCount == 1 ? "attached elsewhere" : $"attached elsewhere x{session.AttachedViewerCount}");
+        }
+
         if (lastActive is not null)
         {
             metadata.Add(lastActive);
         }
 
         return string.Join(" · ", metadata);
+    }
+
+    private static string? GetSessionCwdMetadataText(DiscoveredSession session)
+    {
+        if (string.IsNullOrWhiteSpace(session.DisplayCwd))
+        {
+            return null;
+        }
+
+        return TerminalRenderer.AbbreviateHomePath(session.DisplayCwd.Trim());
     }
 
     private static string? FormatLastActive(string? value, DateTimeOffset now)
@@ -970,4 +1053,92 @@ public sealed class TerminalViewer
         IRenderable Renderable,
         TerminalRenderer.ScrollMetrics Scroll,
         int VisibleItemCount);
+
+    private sealed class ViewerAttachmentRegistration : IDisposable
+    {
+        private static readonly TimeSpan HeartbeatInterval = TimeSpan.FromSeconds(5);
+        private readonly AppPaths _paths;
+        private readonly string _sessionId;
+        private readonly string _path;
+        private readonly string _startedAt;
+        private DateTimeOffset _lastWriteAt;
+        private bool _disposed;
+
+        public ViewerAttachmentRegistration(AppPaths paths, string sessionId)
+        {
+            _paths = paths;
+            _sessionId = sessionId;
+            _path = paths.GetViewerAttachmentPath(sessionId, Environment.ProcessId);
+            _startedAt = DateTimeOffset.UtcNow.ToString("O", CultureInfo.InvariantCulture);
+            WriteStatus("active", DateTimeOffset.UtcNow);
+        }
+
+        public void Refresh(DateTimeOffset now)
+        {
+            if (_disposed || now - _lastWriteAt < HeartbeatInterval)
+            {
+                return;
+            }
+
+            WriteStatus("active", now);
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+            {
+                return;
+            }
+
+            _disposed = true;
+            WriteStatus("stopped", DateTimeOffset.UtcNow);
+            DeleteAttachment();
+        }
+
+        private void WriteStatus(string status, DateTimeOffset now)
+        {
+            var entry = new ViewerAttachmentRegistryEntry
+            {
+                SessionId = _sessionId,
+                Pid = Environment.ProcessId,
+                Cwd = _paths.CurrentDirectory,
+                StartedAt = _startedAt,
+                LastSeen = now.ToString("O", CultureInfo.InvariantCulture),
+                Status = status,
+                Version = typeof(TerminalViewer).Assembly.GetName().Version?.ToString() ?? ""
+            };
+
+            try
+            {
+                Directory.CreateDirectory(_paths.ViewerAttachmentsDirectory);
+                var tempPath = $"{_path}.{Environment.ProcessId}.{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}.tmp";
+                File.WriteAllText(tempPath, JsonSerializer.Serialize(entry, AppJsonContext.Default.ViewerAttachmentRegistryEntry));
+                File.Move(tempPath, _path, overwrite: true);
+                _lastWriteAt = now;
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+
+        private void DeleteAttachment()
+        {
+            try
+            {
+                if (File.Exists(_path))
+                {
+                    File.Delete(_path);
+                }
+            }
+            catch (IOException)
+            {
+            }
+            catch (UnauthorizedAccessException)
+            {
+            }
+        }
+    }
 }

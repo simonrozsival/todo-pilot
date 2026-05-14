@@ -1339,6 +1339,93 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void FilterSessions_SearchesAttachedViewerState()
+    {
+        var running = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+        var attached = CreateSessionWithMetadata(
+            sessionId: "22222222-2222-2222-2222-222222222222",
+            summary: "Second",
+            repository: "repo-two",
+            branch: "feature",
+            cwd: "/tmp/second",
+            hasAttachedViewer: true,
+            attachedViewerCount: 1);
+
+        var filtered = TerminalViewer.FilterSessions([running, attached], "attached");
+
+        var session = Assert.Single(filtered);
+        Assert.Equal("22222222-2222-2222-2222-222222222222", session.Registry.SessionId);
+    }
+
+    [Fact]
+    public void FormatSessionSelectionChoice_ShowsCwdAndAttachedViewerState()
+    {
+        var session = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first",
+            hasAttachedViewer: true,
+            attachedViewerCount: 2);
+
+        var lines = TerminalViewer.FormatSessionSelectionChoiceLines(
+            session,
+            selected: false,
+            maxWidth: 120,
+            now: DateTimeOffset.Parse("2026-05-07T12:59:30+02:00"));
+        var rendered = string.Join('\n', lines);
+
+        Assert.Contains("/tmp/first", rendered, StringComparison.Ordinal);
+        Assert.Contains("attached elsewhere x2", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CreateSessionSelectionDataKey_ChangesWhenSessionNameChanges()
+    {
+        var before = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "Before",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+        var after = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "After",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+
+        Assert.NotEqual(TerminalViewer.CreateSessionSelectionDataKey([before]), TerminalViewer.CreateSessionSelectionDataKey([after]));
+    }
+
+    [Fact]
+    public void PreserveSelectedSessionIndex_KeepsSelectionBySessionId()
+    {
+        var first = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "First",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/first");
+        var second = CreateSessionWithMetadata(
+            sessionId: "22222222-2222-2222-2222-222222222222",
+            summary: "Second",
+            repository: "repo-two",
+            branch: "main",
+            cwd: "/tmp/second");
+
+        var selectedIndex = TerminalViewer.PreserveSelectedSessionIndex([second, first], first.Registry.SessionId, selectedIndex: 0);
+
+        Assert.Equal(1, selectedIndex);
+    }
+
+    [Fact]
     public void ClampSelectionScrollOffset_KeepsSelectedSessionVisible()
     {
         Assert.Equal(0, TerminalViewer.ClampSelectionScrollOffset(itemCount: 10, pageSize: 4, selectedIndex: 0, requestedOffset: 3));
@@ -1497,7 +1584,9 @@ public sealed class TerminalRendererTests
         string cwd,
         string? lastSeen = null,
         bool isStale = false,
-        bool isExtensionProcessRunning = true)
+        bool isExtensionProcessRunning = true,
+        bool hasAttachedViewer = false,
+        int attachedViewerCount = 0)
     {
         return new DiscoveredSession(
             new SessionRegistryEntry { SessionId = sessionId, Cwd = cwd, LastSeen = lastSeen ?? "" },
@@ -1511,6 +1600,8 @@ public sealed class TerminalRendererTests
                 Summary: summary,
                 CreatedAt: null,
                 UpdatedAt: null),
-            isExtensionProcessRunning);
+            isExtensionProcessRunning,
+            hasAttachedViewer,
+            attachedViewerCount);
     }
 }

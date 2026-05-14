@@ -29,8 +29,12 @@ public sealed class AppPathsTests
             var paths = new AppPaths(home.FullName, project.FullName);
 
             Assert.Equal(Path.Combine(home.FullName, ".copilot", "todo-pilot", "sessions"), paths.RegistrySessionsDirectory);
+            Assert.Equal(Path.Combine(home.FullName, ".copilot", "todo-pilot", "viewers"), paths.ViewerAttachmentsDirectory);
             Assert.Equal(Path.Combine(home.FullName, ".copilot", "extensions", "todo-pilot"), paths.UserExtensionDirectory);
             Assert.Equal(Path.Combine(project.FullName, ".github", "extensions", "todo-pilot"), paths.ProjectExtensionDirectory);
+            Assert.Equal(
+                Path.Combine(home.FullName, ".copilot", "todo-pilot", "viewers", "session-one.123.json"),
+                paths.GetViewerAttachmentPath("session-one", 123));
         }
         finally
         {

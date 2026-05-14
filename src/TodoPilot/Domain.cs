@@ -38,6 +38,23 @@ public sealed record SessionRegistryEntry
     public string Version { get; init; } = "";
 }
 
+public sealed record ViewerAttachmentRegistryEntry
+{
+    public string SessionId { get; init; } = "";
+
+    public int Pid { get; init; }
+
+    public string? Cwd { get; init; }
+
+    public string StartedAt { get; init; } = "";
+
+    public string LastSeen { get; init; } = "";
+
+    public string Status { get; init; } = "active";
+
+    public string Version { get; init; } = "";
+}
+
 public sealed record SessionMetadata(
     string SessionId,
     string? Cwd,
@@ -52,7 +69,9 @@ public sealed record DiscoveredSession(
     bool IsStale,
     bool HasSessionDatabase,
     SessionMetadata? Metadata,
-    bool IsExtensionProcessRunning = true)
+    bool IsExtensionProcessRunning = true,
+    bool HasAttachedViewer = false,
+    int AttachedViewerCount = 0)
 {
     public string DisplayCwd => Metadata?.Cwd ?? Registry.Cwd ?? "";
 }
