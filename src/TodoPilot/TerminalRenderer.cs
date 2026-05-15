@@ -20,7 +20,7 @@ public static class TerminalRenderer
     private static readonly TimeSpan FreshCompletionWindow = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan JustNowWindow = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan TodoBatchWindow = TimeSpan.FromSeconds(5);
-    public static readonly TimeSpan InProgressSpinnerFrameInterval = TimeSpan.FromMilliseconds(40);
+    public static readonly TimeSpan InProgressSpinnerFrameInterval = TimeSpan.FromMilliseconds(100);
     private static readonly string[] LoadingSpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly IReadOnlyDictionary<string, int> ExpandedDetailKeyOrder = new Dictionary<string, int>(StringComparer.Ordinal)
     {
@@ -209,6 +209,20 @@ public static class TerminalRenderer
         return rows;
     }
 
+    public static IReadOnlyList<TodoItem> GetDisplayOrderedTodos(IReadOnlyList<TodoItem> todos)
+    {
+        if (todos.Count == 0)
+        {
+            return [];
+        }
+
+        var treeTodoIds = GetOpenBranchTodoIds(todos);
+        var orderedTodos = new List<TodoItem>(todos.Count);
+        AddOpenBranchTreeTodos(orderedTodos, todos, treeTodoIds);
+        orderedTodos.AddRange(todos.Where(todo => IsCompletedTodo(todo) && !treeTodoIds.Contains(todo.Id)));
+        return orderedTodos;
+    }
+
     private static HashSet<string> GetOpenBranchTodoIds(IReadOnlyList<TodoItem> todos)
     {
         var todosById = todos.ToDictionary(todo => todo.Id, StringComparer.Ordinal);
@@ -279,6 +293,76 @@ public static class TerminalRenderer
         {
             AddExpandedTodoRows(rows, todo, contentWidth, dependencyContext);
         }
+    }
+
+    private static void AddOpenBranchTreeTodos(
+        List<TodoItem> orderedTodos,
+        IReadOnlyList<TodoItem> todos,
+        IReadOnlySet<string> treeTodoIds)
+    {
+        var treeTodos = todos.Where(todo => treeTodoIds.Contains(todo.Id)).ToArray();
+        if (treeTodos.Length == 0)
+        {
+            return;
+        }
+
+        var treeById = treeTodos.ToDictionary(todo => todo.Id, StringComparer.Ordinal);
+        var parentById = new Dictionary<string, string>(StringComparer.Ordinal);
+        var childrenById = treeTodos.ToDictionary(todo => todo.Id, _ => new List<TodoItem>(), StringComparer.Ordinal);
+
+        foreach (var todo in treeTodos)
+        {
+            var parentId = todo.Dependencies
+                .Distinct(StringComparer.Ordinal)
+                .FirstOrDefault(treeById.ContainsKey);
+            if (parentId is null)
+            {
+                continue;
+            }
+
+            parentById[todo.Id] = parentId;
+            childrenById[parentId].Add(todo);
+        }
+
+        var rendered = new HashSet<string>(StringComparer.Ordinal);
+        var rendering = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var root in treeTodos.Where(todo => !parentById.ContainsKey(todo.Id)))
+        {
+            AddOpenBranchTreeTodos(orderedTodos, root, childrenById, rendered, rendering);
+        }
+
+        foreach (var todo in treeTodos)
+        {
+            if (!rendered.Contains(todo.Id))
+            {
+                AddOpenBranchTreeTodos(orderedTodos, todo, childrenById, rendered, rendering);
+            }
+        }
+    }
+
+    private static void AddOpenBranchTreeTodos(
+        List<TodoItem> orderedTodos,
+        TodoItem todo,
+        IReadOnlyDictionary<string, List<TodoItem>> childrenById,
+        HashSet<string> rendered,
+        HashSet<string> rendering)
+    {
+        if (rendered.Contains(todo.Id) || !rendering.Add(todo.Id))
+        {
+            return;
+        }
+
+        orderedTodos.Add(todo);
+        var children = childrenById.TryGetValue(todo.Id, out var childList)
+            ? childList.Where(child => !rendered.Contains(child.Id)).ToArray()
+            : [];
+        foreach (var child in children)
+        {
+            AddOpenBranchTreeTodos(orderedTodos, child, childrenById, rendered, rendering);
+        }
+
+        rendering.Remove(todo.Id);
+        rendered.Add(todo.Id);
     }
 
     private static void AddOpenBranchTreeRows(
@@ -670,6 +754,7 @@ public static class TerminalRenderer
     public static string GetSessionName(DiscoveredSession session)
     {
         var name = FirstNonEmpty(
+            session.Metadata?.UserName,
             session.Metadata?.Summary,
             session.Metadata?.Repository,
             Path.GetFileName(session.DisplayCwd),

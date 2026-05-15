@@ -50,7 +50,8 @@ public sealed class SessionMetadataReader
                     GetString(reader, "branch"),
                     GetString(reader, "summary"),
                     GetString(reader, "created_at"),
-                    GetString(reader, "updated_at"));
+                    GetString(reader, "updated_at"),
+                    ReadUserProvidedSessionName(id));
             }
 
             return result;
@@ -118,6 +119,58 @@ public sealed class SessionMetadataReader
 
     private static string QuoteIdentifier(string value) =>
         "\"" + value.Replace("\"", "\"\"", StringComparison.Ordinal) + "\"";
+
+    private string? ReadUserProvidedSessionName(string sessionId)
+    {
+        var workspacePath = Path.Combine(_paths.SessionStateDirectory, sessionId, "workspace.yaml");
+        if (!File.Exists(workspacePath))
+        {
+            return null;
+        }
+
+        try
+        {
+            var userNamed = false;
+            var name = default(string);
+            foreach (var rawLine in File.ReadLines(workspacePath))
+            {
+                var line = rawLine.Trim();
+                if (line.StartsWith("user_named:", StringComparison.Ordinal))
+                {
+                    userNamed = string.Equals(line["user_named:".Length..].Trim(), "true", StringComparison.OrdinalIgnoreCase);
+                }
+                else if (line.StartsWith("name:", StringComparison.Ordinal))
+                {
+                    name = UnquoteYamlScalar(line["name:".Length..].Trim());
+                }
+            }
+
+            return userNamed && !string.IsNullOrWhiteSpace(name)
+                ? name
+                : null;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static string UnquoteYamlScalar(string value)
+    {
+        var result = value.Trim();
+        while (result.Length >= 2
+            && ((result[0] == '\'' && result[^1] == '\'')
+                || (result[0] == '"' && result[^1] == '"')))
+        {
+            result = result[1..^1].Trim();
+        }
+
+        return result;
+    }
 
     private static string? GetString(SqliteDataReader reader, string column)
     {

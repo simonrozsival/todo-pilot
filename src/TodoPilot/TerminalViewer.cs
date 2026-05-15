@@ -169,7 +169,7 @@ public sealed class TerminalViewer
 
                 var initialNow = DateTimeOffset.Now;
                 var initialSnapshot = await initialSnapshotTask.ConfigureAwait(false);
-                focusedTodoId = SelectAutoFollowedTodoId(initialSnapshot.Todos);
+                focusedTodoId = SelectAutoFollowedTodoId(TerminalRenderer.GetDisplayOrderedTodos(initialSnapshot.Todos));
                 var initialDisplay = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, initialNow, focusMarkerTimeout);
                 var initialContextCount = GetFocusedContextItemCountBefore(autoFollowWip);
                 renderedKey = CreateRenderKey(selectedSession, initialSnapshot, initialNow, initialDisplay, initialContextCount);
@@ -186,9 +186,10 @@ public sealed class TerminalViewer
                     viewerAttachment.Refresh(now.ToUniversalTime());
                     selectedSession = _discovery.RefreshMetadata(selectedSession);
                     var snapshot = _todoReader.Read(databasePath);
+                    var displayOrderedTodos = TerminalRenderer.GetDisplayOrderedTodos(snapshot.Todos);
                     if (autoFollowWip)
                     {
-                        focusedTodoId = SelectAutoFollowedTodoId(snapshot.Todos);
+                        focusedTodoId = SelectAutoFollowedTodoId(displayOrderedTodos);
                     }
                     else
                     {
@@ -198,7 +199,7 @@ public sealed class TerminalViewer
                             autoFollowWip = true;
                             manualFocusedTodoInitialStatus = null;
                             expandedTodoId = null;
-                            focusedTodoId = SelectAutoFollowedTodoId(snapshot.Todos);
+                            focusedTodoId = SelectAutoFollowedTodoId(displayOrderedTodos);
                         }
                     }
 
@@ -244,7 +245,7 @@ public sealed class TerminalViewer
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.FocusPrevious:
-                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -1);
+                                    focusedTodoId = MoveFocusedTodoId(displayOrderedTodos, focusedTodoId, -1);
                                     manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
                                     autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
@@ -252,7 +253,7 @@ public sealed class TerminalViewer
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.FocusNext:
-                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, 1);
+                                    focusedTodoId = MoveFocusedTodoId(displayOrderedTodos, focusedTodoId, 1);
                                     manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
                                     autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
@@ -270,7 +271,7 @@ public sealed class TerminalViewer
                                     }
                                     break;
                                 case TodoListKeyAction.PageNext:
-                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, visibleTodoCount);
+                                    focusedTodoId = MoveFocusedTodoId(displayOrderedTodos, focusedTodoId, visibleTodoCount);
                                     manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
                                     autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
@@ -278,7 +279,7 @@ public sealed class TerminalViewer
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.PagePrevious:
-                                    focusedTodoId = MoveFocusedTodoId(snapshot.Todos, focusedTodoId, -visibleTodoCount);
+                                    focusedTodoId = MoveFocusedTodoId(displayOrderedTodos, focusedTodoId, -visibleTodoCount);
                                     manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
                                     autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
@@ -286,7 +287,7 @@ public sealed class TerminalViewer
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.FocusFirst:
-                                    focusedTodoId = snapshot.Todos.FirstOrDefault()?.Id;
+                                    focusedTodoId = displayOrderedTodos.FirstOrDefault()?.Id;
                                     manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
                                     autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;
@@ -294,7 +295,7 @@ public sealed class TerminalViewer
                                     until = DateTimeOffset.UtcNow;
                                     break;
                                 case TodoListKeyAction.FocusLast:
-                                    focusedTodoId = snapshot.Todos.LastOrDefault()?.Id;
+                                    focusedTodoId = displayOrderedTodos.LastOrDefault()?.Id;
                                     manualFocusedTodoInitialStatus = GetTodoStatus(snapshot.Todos, focusedTodoId);
                                     autoFollowWip = false;
                                     lastFocusNavigationAt = DateTimeOffset.Now;

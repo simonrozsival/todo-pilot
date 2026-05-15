@@ -48,6 +48,26 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void GetSessionName_PrefersUserProvidedNameOverGeneratedSummary()
+    {
+        var session = new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = "11111111-1111-1111-1111-111111111111" },
+            IsStale: false,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                "11111111-1111-1111-1111-111111111111",
+                Cwd: null,
+                Repository: "repo",
+                Branch: null,
+                Summary: "Analyze CI Android Test Results",
+                CreatedAt: null,
+                UpdatedAt: null,
+                UserName: "Mono x86 crash"));
+
+        Assert.Equal("Mono x86 crash", TerminalRenderer.GetSessionName(session));
+    }
+
+    [Fact]
     public void FormatTodoLine_AppendsGrayCompletedTimestampOutsideDimCompletedText()
     {
         const string updatedAt = "2026-05-06T12:48:00+02:00";
@@ -229,7 +249,7 @@ public sealed class TerminalRendererTests
             Dependencies: []);
 
         var firstFrame = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T10:29:00.000+02:00"));
-        var secondFrame = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T10:29:00.040+02:00"));
+        var secondFrame = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T10:29:00.100+02:00"));
 
         Assert.StartsWith("[yellow][[⠋]] Current todo[/]", firstFrame, StringComparison.Ordinal);
         Assert.StartsWith("[yellow][[⠙]] Current todo[/]", secondFrame, StringComparison.Ordinal);
@@ -261,7 +281,7 @@ public sealed class TerminalRendererTests
             "1 todo(s)");
 
         var firstKey = TerminalViewer.CreateRenderKey(snapshot, DateTimeOffset.Parse("2026-05-06T10:29:00.000+02:00"));
-        var secondKey = TerminalViewer.CreateRenderKey(snapshot, DateTimeOffset.Parse("2026-05-06T10:29:00.040+02:00"));
+        var secondKey = TerminalViewer.CreateRenderKey(snapshot, DateTimeOffset.Parse("2026-05-06T10:29:00.100+02:00"));
 
         Assert.NotEqual(firstKey, secondKey);
     }
@@ -1256,6 +1276,39 @@ public sealed class TerminalRendererTests
         Assert.Equal("c", TerminalViewer.MoveFocusedTodoId(todos, "a", 10));
         Assert.Equal("a", TerminalViewer.MoveFocusedTodoId(todos, "c", -10));
         Assert.Equal("b", TerminalViewer.MoveFocusedTodoId(todos, "a", 1));
+    }
+
+    [Fact]
+    public void MoveFocusedTodoId_HonorsRendererDisplayOrder()
+    {
+        var todos = new[]
+        {
+            new TodoItem("fix-runtime", "Fix Runtime.register exception handling", "done", null, null, null, []),
+            new TodoItem("verify-native", "Verify native change", "done", null, null, null, []),
+            new TodoItem("resolve-access", "Resolve artifact access", "done", null, null, null, []),
+            new TodoItem("locate-results", "Locate crashed llvm-ir results", "done", null, null, null, ["resolve-access"]),
+            new TodoItem("extract-logcat", "Extract logcat evidence", "done", null, null, null, ["locate-results"]),
+            new TodoItem("reproduce", "Reproduce locally", "in_progress", null, null, null, ["extract-logcat"]),
+            new TodoItem("symbolicate", "Symbolicate native traces", "done", null, null, null, ["extract-logcat"]),
+            new TodoItem("summarize", "Summarize root cause", "done", null, null, null, ["extract-logcat"])
+        };
+        var displayOrderedTodos = TerminalRenderer.GetDisplayOrderedTodos(todos);
+
+        Assert.Equal(
+            [
+                "resolve-access",
+                "locate-results",
+                "extract-logcat",
+                "reproduce",
+                "symbolicate",
+                "summarize",
+                "fix-runtime",
+                "verify-native"
+            ],
+            displayOrderedTodos.Select(todo => todo.Id));
+        Assert.Equal("fix-runtime", TerminalViewer.MoveFocusedTodoId(displayOrderedTodos, "summarize", 1));
+        Assert.Equal("summarize", TerminalViewer.MoveFocusedTodoId(displayOrderedTodos, "fix-runtime", -1));
+        Assert.Equal("summarize", TerminalViewer.MoveFocusedTodoId(displayOrderedTodos, "reproduce", 2));
     }
 
     [Fact]

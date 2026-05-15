@@ -62,7 +62,8 @@ public sealed record SessionMetadata(
     string? Branch,
     string? Summary,
     string? CreatedAt,
-    string? UpdatedAt);
+    string? UpdatedAt,
+    string? UserName = null);
 
 public sealed record DiscoveredSession(
     SessionRegistryEntry Registry,
