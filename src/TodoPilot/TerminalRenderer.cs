@@ -20,6 +20,7 @@ public static class TerminalRenderer
     private static readonly TimeSpan FreshCompletionWindow = TimeSpan.FromMinutes(5);
     private static readonly TimeSpan JustNowWindow = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan TodoBatchWindow = TimeSpan.FromSeconds(5);
+    public static readonly TimeSpan InProgressSpinnerFrameInterval = TimeSpan.FromMilliseconds(40);
     private static readonly string[] LoadingSpinnerFrames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
     private static readonly IReadOnlyDictionary<string, int> ExpandedDetailKeyOrder = new Dictionary<string, int>(StringComparer.Ordinal)
     {
@@ -98,6 +99,12 @@ public static class TerminalRenderer
         }
 
         return LoadingSpinnerFrames[index];
+    }
+
+    public static string GetInProgressSpinnerFrame(DateTimeOffset now)
+    {
+        var frame = now.ToUnixTimeMilliseconds() / (long)InProgressSpinnerFrameInterval.TotalMilliseconds;
+        return GetLoadingSpinnerFrame((int)(frame % LoadingSpinnerFrames.Length));
     }
 
     public static ScrollMetrics CalculateScrollMetrics(int bodyLineCount, int headerLineCount, int footerLineCount, int? consoleHeight, int requestedOffset)
@@ -190,33 +197,248 @@ public static class TerminalRenderer
         }
         else
         {
-            foreach (var todo in snapshot.Todos)
+            var treeTodoIds = GetOpenBranchTodoIds(snapshot.Todos);
+            AddOpenBranchTreeRows(rows, snapshot.Todos, treeTodoIds, renderedAt, contentWidth, displayState, dependencyContext);
+
+            foreach (var todo in snapshot.Todos.Where(todo => IsCompletedTodo(todo) && !treeTodoIds.Contains(todo.Id)))
             {
-                var focused = displayState.ShowFocusMarker
-                    && string.Equals(todo.Id, displayState.FocusedTodoId, StringComparison.Ordinal);
-                var shouldDim = dependencyContext.ShouldDim(todo.Id);
-                var todoLines = FormatTodoLines(
-                    todo,
-                    renderedAt,
-                    contentWidth,
-                    muteCompletedTodo: shouldDim,
-                    styleOverride: shouldDim ? DependencyMutedTodoStyle : null,
-                    timestampStyle: shouldDim ? DependencyMutedTodoStyle : TimestampStyle);
-
-                for (var i = 0; i < todoLines.Count; i++)
-                {
-                    var padding = focused && i == 0 ? $"[white]›[/] " : Padding();
-                    rows.Add(new ListLine($"{padding}{todoLines[i]}", todo.Id));
-                }
-
-                if (string.Equals(todo.Id, displayState.ExpandedTodoId, StringComparison.Ordinal))
-                {
-                    AddExpandedTodoRows(rows, todo, contentWidth, dependencyContext);
-                }
+                AddFlatTodoRows(rows, todo, renderedAt, contentWidth, displayState, dependencyContext);
             }
         }
 
         return rows;
+    }
+
+    private static HashSet<string> GetOpenBranchTodoIds(IReadOnlyList<TodoItem> todos)
+    {
+        var todosById = todos.ToDictionary(todo => todo.Id, StringComparer.Ordinal);
+        var result = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var todo in todos.Where(todo => !IsCompletedTodo(todo)))
+        {
+            AddTodoAndDependencies(todo.Id, todosById, result);
+        }
+
+        var added = true;
+        while (added)
+        {
+            added = false;
+            foreach (var todo in todos)
+            {
+                if (result.Contains(todo.Id)
+                    || !todo.Dependencies.Any(result.Contains))
+                {
+                    continue;
+                }
+
+                result.Add(todo.Id);
+                added = true;
+            }
+        }
+
+        return result;
+    }
+
+    private static void AddTodoAndDependencies(
+        string todoId,
+        IReadOnlyDictionary<string, TodoItem> todosById,
+        HashSet<string> result)
+    {
+        if (!result.Add(todoId) || !todosById.TryGetValue(todoId, out var todo))
+        {
+            return;
+        }
+
+        foreach (var dependencyId in todo.Dependencies.Distinct(StringComparer.Ordinal))
+        {
+            AddTodoAndDependencies(dependencyId, todosById, result);
+        }
+    }
+
+    private static void AddFlatTodoRows(
+        List<ListLine> rows,
+        TodoItem todo,
+        DateTimeOffset renderedAt,
+        int contentWidth,
+        TodoListDisplayState displayState,
+        ExpandedDependencyContext dependencyContext)
+    {
+        var focused = displayState.ShowFocusMarker
+            && string.Equals(todo.Id, displayState.FocusedTodoId, StringComparison.Ordinal);
+        var shouldDim = dependencyContext.ShouldDim(todo.Id);
+        var todoLines = FormatTodoLines(
+            todo,
+            renderedAt,
+            contentWidth,
+            muteCompletedTodo: shouldDim,
+            styleOverride: shouldDim ? DependencyMutedTodoStyle : null,
+            timestampStyle: shouldDim ? DependencyMutedTodoStyle : TimestampStyle);
+
+        AddTodoLines(rows, todo.Id, todoLines, focused);
+
+        if (string.Equals(todo.Id, displayState.ExpandedTodoId, StringComparison.Ordinal))
+        {
+            AddExpandedTodoRows(rows, todo, contentWidth, dependencyContext);
+        }
+    }
+
+    private static void AddOpenBranchTreeRows(
+        List<ListLine> rows,
+        IReadOnlyList<TodoItem> todos,
+        IReadOnlySet<string> treeTodoIds,
+        DateTimeOffset renderedAt,
+        int contentWidth,
+        TodoListDisplayState displayState,
+        ExpandedDependencyContext dependencyContext)
+    {
+        var treeTodos = todos.Where(todo => treeTodoIds.Contains(todo.Id)).ToArray();
+        if (treeTodos.Length == 0)
+        {
+            return;
+        }
+
+        var treeById = treeTodos.ToDictionary(todo => todo.Id, StringComparer.Ordinal);
+        var parentById = new Dictionary<string, string>(StringComparer.Ordinal);
+        var childrenById = treeTodos.ToDictionary(todo => todo.Id, _ => new List<TodoItem>(), StringComparer.Ordinal);
+
+        foreach (var todo in treeTodos)
+        {
+            var parentId = todo.Dependencies
+                .Distinct(StringComparer.Ordinal)
+                .FirstOrDefault(treeById.ContainsKey);
+            if (parentId is null)
+            {
+                continue;
+            }
+
+            parentById[todo.Id] = parentId;
+            childrenById[parentId].Add(todo);
+        }
+
+        var rendered = new HashSet<string>(StringComparer.Ordinal);
+        var rendering = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var root in treeTodos.Where(todo => !parentById.ContainsKey(todo.Id)))
+        {
+            AddOpenBranchTreeRows(
+                rows,
+                root,
+                childrenById,
+                renderedAt,
+                contentWidth,
+                displayState,
+                dependencyContext,
+                ancestorsPrefix: "",
+                isRoot: true,
+                isLast: true,
+                rendered,
+                rendering);
+        }
+
+        foreach (var todo in treeTodos)
+        {
+            if (rendered.Contains(todo.Id))
+            {
+                continue;
+            }
+
+            AddOpenBranchTreeRows(
+                rows,
+                todo,
+                childrenById,
+                renderedAt,
+                contentWidth,
+                displayState,
+                dependencyContext,
+                ancestorsPrefix: "",
+                isRoot: true,
+                isLast: true,
+                rendered,
+                rendering);
+        }
+    }
+
+    private static void AddOpenBranchTreeRows(
+        List<ListLine> rows,
+        TodoItem todo,
+        IReadOnlyDictionary<string, List<TodoItem>> childrenById,
+        DateTimeOffset renderedAt,
+        int contentWidth,
+        TodoListDisplayState displayState,
+        ExpandedDependencyContext dependencyContext,
+        string ancestorsPrefix,
+        bool isRoot,
+        bool isLast,
+        HashSet<string> rendered,
+        HashSet<string> rendering)
+    {
+        if (rendered.Contains(todo.Id) || !rendering.Add(todo.Id))
+        {
+            return;
+        }
+
+        var focused = displayState.ShowFocusMarker
+            && string.Equals(todo.Id, displayState.FocusedTodoId, StringComparison.Ordinal);
+        var shouldDim = dependencyContext.ShouldDim(todo.Id);
+        var prefixes = GetDependencyTreePrefixes(ancestorsPrefix, isRoot, isLast);
+        var todoLines = FormatDependencyTreeTodoLines(
+            todo,
+            renderedAt,
+            contentWidth,
+            prefixes.FirstLine,
+            prefixes.ContinuationLine,
+            styleOverride: shouldDim ? DependencyMutedTodoStyle : null,
+            timestampStyle: shouldDim ? DependencyMutedTodoStyle : TimestampStyle);
+
+        AddTodoLines(rows, todo.Id, todoLines, focused);
+
+        if (string.Equals(todo.Id, displayState.ExpandedTodoId, StringComparison.Ordinal))
+        {
+            AddExpandedTodoRows(rows, todo, contentWidth, dependencyContext);
+        }
+
+        var children = childrenById.TryGetValue(todo.Id, out var childList)
+            ? childList.Where(child => !rendered.Contains(child.Id)).ToArray()
+            : [];
+        var indentChildren = children.Length > 1;
+        for (var i = 0; i < children.Length; i++)
+        {
+            AddOpenBranchTreeRows(
+                rows,
+                children[i],
+                childrenById,
+                renderedAt,
+                contentWidth,
+                displayState,
+                dependencyContext,
+                prefixes.ChildLine,
+                isRoot: !indentChildren,
+                isLast: i == children.Length - 1,
+                rendered,
+                rendering);
+        }
+
+        rendering.Remove(todo.Id);
+        rendered.Add(todo.Id);
+    }
+
+    private static void AddTodoLines(List<ListLine> rows, string todoId, IReadOnlyList<string> todoLines, bool focused)
+    {
+        for (var i = 0; i < todoLines.Count; i++)
+        {
+            var padding = focused && i == 0 ? $"[white]›[/] " : Padding();
+            rows.Add(new ListLine($"{padding}{todoLines[i]}", todoId));
+        }
+    }
+
+    private static DependencyTreePrefixes GetDependencyTreePrefixes(string ancestorsPrefix, bool isRoot, bool isLast)
+    {
+        if (isRoot)
+        {
+            return new DependencyTreePrefixes(ancestorsPrefix, ancestorsPrefix, ancestorsPrefix);
+        }
+
+        var branch = isLast ? " └─ " : " ├─ ";
+        var childPrefix = ancestorsPrefix + (isLast ? "    " : " │  ");
+        return new DependencyTreePrefixes(ancestorsPrefix + branch, childPrefix, childPrefix);
     }
 
     private static void AddExpandedTodoRows(List<ListLine> rows, TodoItem todo, int contentWidth, ExpandedDependencyContext dependencyContext)
@@ -578,6 +800,10 @@ public static class TerminalRenderer
             _ => CanParseTimestamp(todo.CreatedAt)
         });
 
+    public static bool HasInProgressTodos(TodoSnapshot snapshot) =>
+        snapshot.State == TodoReadState.Available
+        && snapshot.Todos.Any(todo => todo.Status == "in_progress");
+
     public static IReadOnlyList<IReadOnlyList<TodoItem>> CreateTodoBatches(IReadOnlyList<TodoItem> todos)
     {
         if (todos.Count == 0)
@@ -629,7 +855,7 @@ public static class TerminalRenderer
         string? styleOverride,
         string timestampStyle)
     {
-        var lines = FormatStyledTodoLines("[•]", todo.Title, contentWidth, styleOverride ?? "yellow").ToList();
+        var lines = FormatStyledTodoLines($"[{GetInProgressSpinnerFrame(now)}]", todo.Title, contentWidth, styleOverride ?? "yellow").ToList();
         return AppendStyledSuffix(lines, FormatStartedTimestamp(todo.UpdatedAt, now), contentWidth, timestampStyle);
     }
 
@@ -655,9 +881,78 @@ public static class TerminalRenderer
         return AppendStyledSuffix(lines, FormatAddedTimestamp(todo.CreatedAt, now), contentWidth, timestampStyle);
     }
 
+    private static IReadOnlyList<string> FormatDependencyTreeTodoLines(
+        TodoItem todo,
+        DateTimeOffset now,
+        int contentWidth,
+        string firstLinePrefix,
+        string continuationLinePrefix,
+        string? styleOverride,
+        string timestampStyle)
+    {
+        var badge = todo.Status switch
+        {
+            "done" => "[✓]",
+            "in_progress" => $"[{GetInProgressSpinnerFrame(now)}]",
+            "blocked" => "[⊘]",
+            _ => "[ ]"
+        };
+        var titlePrefix = $"{firstLinePrefix}{badge} ";
+        var continuationPrefix = $"{continuationLinePrefix}{ContinuationIndent}";
+        var firstWidth = Math.Max(1, contentWidth - DisplayLength(titlePrefix));
+        var continuationWidth = Math.Max(1, contentWidth - DisplayLength(continuationPrefix));
+        var wrappedTitle = WrapText(todo.Title, firstWidth, continuationWidth);
+        var lineStyle = styleOverride ?? todo.Status switch
+        {
+            "done" => IsFreshTimestamp(todo.UpdatedAt, now) ? "bold green" : MutedTodoStyle,
+            "in_progress" => "yellow",
+            "blocked" => BlockedTodoStyle,
+            _ => null
+        };
+        var lines = new List<string>(wrappedTitle.Count);
+        for (var i = 0; i < wrappedTitle.Count; i++)
+        {
+            var prefix = i == 0 ? firstLinePrefix : continuationLinePrefix;
+            var text = i == 0
+                ? $"{badge} {wrappedTitle[i]}"
+                : wrappedTitle[i];
+            var escaped = Markup.Escape(text);
+            var styled = lineStyle is null ? escaped : $"[{lineStyle}]{escaped}[/]";
+            lines.Add($"{FormatDependencyTreePrefix(prefix)}{styled}");
+        }
+
+        var timestamp = todo.Status switch
+        {
+            "done" => FormatDoneTimestamp(todo.UpdatedAt, now),
+            "in_progress" => FormatStartedTimestamp(todo.UpdatedAt, now),
+            _ => FormatAddedTimestamp(todo.CreatedAt, now)
+        };
+        return AppendStyledSuffix(lines, timestamp, contentWidth, timestampStyle, continuationPrefix);
+    }
+
+    private static string FormatDependencyTreePrefix(string prefix)
+    {
+        if (prefix.Length == 0)
+        {
+            return "";
+        }
+
+        return $"[{TimestampStyle}]{Markup.Escape(prefix)}[/]";
+    }
+
     private static string FormatStatusForDisplay(string status) => status;
 
     private static IReadOnlyList<string> AppendStyledSuffix(List<string> lines, string? suffix, int contentWidth, string style)
+    {
+        return AppendStyledSuffix(lines, suffix, contentWidth, style, ContinuationIndent);
+    }
+
+    private static IReadOnlyList<string> AppendStyledSuffix(
+        List<string> lines,
+        string? suffix,
+        int contentWidth,
+        string style,
+        string continuationIndent)
     {
         if (suffix is null || lines.Count == 0)
         {
@@ -672,10 +967,10 @@ public static class TerminalRenderer
         }
         else
         {
-            var suffixWidth = Math.Max(1, contentWidth - DisplayLength(ContinuationIndent));
+            var suffixWidth = Math.Max(1, contentWidth - DisplayLength(continuationIndent));
             foreach (var line in WrapText(suffix, suffixWidth, suffixWidth))
             {
-                lines.Add($"{ContinuationIndent}[{style}]{Markup.Escape(line)}[/]");
+                lines.Add($"{Markup.Escape(continuationIndent)}[{style}]{Markup.Escape(line)}[/]");
             }
         }
 
@@ -720,6 +1015,9 @@ public static class TerminalRenderer
 
     private static DateTimeOffset? TryGetCreatedAt(TodoItem todo) =>
         TryParseTimestamp(todo.CreatedAt, out var createdAt) ? createdAt : null;
+
+    private static bool IsCompletedTodo(TodoItem todo) =>
+        string.Equals(todo.Status, "done", StringComparison.Ordinal);
 
     private static bool ShouldStartNewBatch(DateTimeOffset? previousCreatedAt, DateTimeOffset? createdAt)
     {
@@ -1057,6 +1355,8 @@ public static class TerminalRenderer
         new(lines.Select<string, IRenderable>(line => string.IsNullOrEmpty(line) ? Text.Empty : new Markup(line)));
 
     public sealed record ListLine(string Markup, string? ItemId);
+
+    private sealed record DependencyTreePrefixes(string FirstLine, string ContinuationLine, string ChildLine);
 
     private sealed record ExpandedDetailRow(string Key, string Value, int Sequence);
 

@@ -66,7 +66,7 @@ public sealed class TodoDatabaseReaderTests
     }
 
     [Fact]
-    public void Read_OrdersByCompletedContextThenWorkflowReadiness()
+    public void Read_PreservesTodoCreationOrder()
     {
         var directory = Directory.CreateTempSubdirectory();
         var dbPath = Path.Combine(directory.FullName, "session.db");
@@ -97,17 +97,17 @@ public sealed class TodoDatabaseReaderTests
 
             Assert.Equal(
                 [
-                    "done-a",
-                    "done-z",
-                    "wip-z",
                     "wip-a",
-                    "ready-z",
+                    "wip-z",
                     "ready-a",
-                    "explicit-z",
-                    "explicit-a",
+                    "ready-z",
                     "dep-open",
+                    "blocked-by-dep-a",
                     "blocked-by-dep-z",
-                    "blocked-by-dep-a"
+                    "explicit-a",
+                    "explicit-z",
+                    "done-a",
+                    "done-z"
                 ],
                 snapshot.Todos.Select(todo => todo.Id));
         }
@@ -118,7 +118,7 @@ public sealed class TodoDatabaseReaderTests
     }
 
     [Fact]
-    public void Read_OrdersDoneTodosOldestToNewestBeforeActiveTodos()
+    public void Read_PreservesCreationOrderRegardlessOfCompletionTimestamps()
     {
         var directory = Directory.CreateTempSubdirectory();
         var dbPath = Path.Combine(directory.FullName, "session.db");
@@ -141,13 +141,13 @@ public sealed class TodoDatabaseReaderTests
 
             Assert.Equal(
                 [
-                    "done-x-invalid",
-                    "done-y-missing",
+                    "pending-z",
                     "done-z-old",
-                    "done-b-same",
-                    "done-c-same",
                     "done-a-new",
-                    "pending-z"
+                    "done-c-same",
+                    "done-b-same",
+                    "done-y-missing",
+                    "done-x-invalid"
                 ],
                 snapshot.Todos.Select(todo => todo.Id));
         }
@@ -213,8 +213,8 @@ public sealed class TodoDatabaseReaderTests
             ExecuteSql(dbPath, "UPDATE todos SET status = 'done' WHERE id = 'target';");
             var after = new TodoDatabaseReader().Read(dbPath);
 
-            Assert.Equal(["target", "wait"], before.Todos.Select(todo => todo.Id));
-            Assert.Equal(["target", "wait"], after.Todos.Select(todo => todo.Id));
+            Assert.Equal(["wait", "target"], before.Todos.Select(todo => todo.Id));
+            Assert.Equal(["wait", "target"], after.Todos.Select(todo => todo.Id));
             Assert.NotEqual(before.DataHash, after.DataHash);
             Assert.Empty(after.Todos.Single(todo => todo.Id == "wait").BlockedBy);
         }
@@ -245,7 +245,7 @@ public sealed class TodoDatabaseReaderTests
 
             var snapshot = new TodoDatabaseReader().Read(dbPath);
 
-            Assert.Equal(["cycle-b", "cycle-a"], snapshot.Todos.Select(todo => todo.Id));
+            Assert.Equal(["cycle-a", "cycle-b"], snapshot.Todos.Select(todo => todo.Id));
             Assert.Equal(["cycle-b"], snapshot.Todos.Single(todo => todo.Id == "cycle-a").BlockedBy);
             Assert.Equal(["cycle-a"], snapshot.Todos.Single(todo => todo.Id == "cycle-b").BlockedBy);
         }

@@ -314,7 +314,28 @@ public sealed class TerminalViewer
                             break;
                         }
 
-                        await Task.Delay(100, cancellationToken).ConfigureAwait(false);
+                        var hasInProgressTodos = TerminalRenderer.HasInProgressTodos(snapshot);
+                        var delay = hasInProgressTodos
+                            ? TerminalRenderer.InProgressSpinnerFrameInterval
+                            : TimeSpan.FromMilliseconds(100);
+                        await Task.Delay(delay, cancellationToken).ConfigureAwait(false);
+
+                        if (hasInProgressTodos)
+                        {
+                            var animationNow = DateTimeOffset.Now;
+                            var animationDisplay = CreateDisplayState(focusedTodoId, expandedTodoId, lastFocusNavigationAt, animationNow, focusMarkerTimeout);
+                            var animationContextCount = GetFocusedContextItemCountBefore(autoFollowWip);
+                            var animationRenderKey = CreateRenderKey(selectedSession, snapshot, animationNow, animationDisplay, animationContextCount);
+                            if (ShouldRender(renderedKey, animationRenderKey, resizeRequested: false))
+                            {
+                                var view = BuildTodoList(selectedSession, snapshot, animationNow, scrollOffset, animationDisplay, animationContextCount);
+                                scrollOffset = view.Scroll.Offset;
+                                visibleTodoCount = Math.Max(1, view.VisibleTodoCount);
+                                ctx.UpdateTarget(view.Renderable);
+                                ctx.Refresh();
+                                renderedKey = animationRenderKey;
+                            }
+                        }
                     }
                 }
             }).ConfigureAwait(false);
@@ -668,6 +689,7 @@ public sealed class TerminalViewer
             snapshot.Message,
             snapshot.Todos.Count,
             TerminalRenderer.HasDisplayedTimestamps(snapshot) ? now.ToUnixTimeSeconds() / 60 : "",
+            TerminalRenderer.HasInProgressTodos(snapshot) ? TerminalRenderer.GetInProgressSpinnerFrame(now) : "",
             TerminalRenderer.CreateTimestampKey(snapshot, now));
 
     public static string CreateRenderKey(

@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
@@ -32,6 +31,7 @@ public sealed class TodoDatabaseReader
             command.CommandText = """
                 SELECT id, title, description, status, created_at, updated_at
                 FROM todos
+                ORDER BY rowid
                 """;
 
             var rows = new List<TodoRow>();
@@ -79,11 +79,6 @@ public sealed class TodoDatabaseReader
                         BlockedBy = blockedBy
                     };
                 })
-                .OrderBy(GetWorkflowRank)
-                .ThenBy(GetDoneTimestampBucket)
-                .ThenBy(GetDoneUpdatedAt)
-                .ThenBy(GetDoneIdSortKey, StringComparer.Ordinal)
-                .ThenByDescending(GetActiveIdSortKey, StringComparer.Ordinal)
                 .ToArray();
 
             return new TodoSnapshot(TodoReadState.Available, todos, ComputeHash(todos), $"{todos.Length} todo(s)");
@@ -146,48 +141,6 @@ public sealed class TodoDatabaseReader
     {
         var ordinal = reader.GetOrdinal(column);
         return reader.IsDBNull(ordinal) ? null : reader.GetString(ordinal);
-    }
-
-    private static int GetWorkflowRank(TodoItem todo) =>
-        todo.Status switch
-        {
-            "done" => 0,
-            "in_progress" => 1,
-            "pending" when todo.BlockedBy.Count == 0 => 2,
-            "pending" => 3,
-            _ when todo.BlockedBy.Count == 0 => 2,
-            _ => 3
-        };
-
-    private static int GetDoneTimestampBucket(TodoItem todo)
-    {
-        if (!IsDone(todo))
-        {
-            return 0;
-        }
-
-        return TryParseTimestamp(todo.UpdatedAt, out _) ? 1 : 0;
-    }
-
-    private static DateTimeOffset GetDoneUpdatedAt(TodoItem todo) =>
-        IsDone(todo) && TryParseTimestamp(todo.UpdatedAt, out var updatedAt)
-            ? updatedAt
-            : DateTimeOffset.MinValue;
-
-    private static bool IsDone(TodoItem todo) =>
-        string.Equals(todo.Status, "done", StringComparison.Ordinal);
-
-    private static string GetDoneIdSortKey(TodoItem todo) =>
-        IsDone(todo) ? todo.Id : "";
-
-    private static string GetActiveIdSortKey(TodoItem todo) =>
-        IsDone(todo) ? "" : todo.Id;
-
-    private static bool TryParseTimestamp(string? value, out DateTimeOffset timestamp)
-    {
-        timestamp = default;
-        return !string.IsNullOrWhiteSpace(value)
-            && DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out timestamp);
     }
 
     private sealed record TodoRow(

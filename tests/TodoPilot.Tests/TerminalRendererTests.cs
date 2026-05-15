@@ -217,6 +217,25 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void FormatTodoLine_UsesOneCharacterSpinnerForInProgressBadge()
+    {
+        var todo = new TodoItem(
+            "current",
+            "Current todo",
+            "in_progress",
+            Description: null,
+            CreatedAt: null,
+            UpdatedAt: null,
+            Dependencies: []);
+
+        var firstFrame = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T10:29:00.000+02:00"));
+        var secondFrame = TerminalRenderer.FormatTodoLine(todo, DateTimeOffset.Parse("2026-05-06T10:29:00.040+02:00"));
+
+        Assert.StartsWith("[yellow][[⠋]] Current todo[/]", firstFrame, StringComparison.Ordinal);
+        Assert.StartsWith("[yellow][[⠙]] Current todo[/]", secondFrame, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CreateTimestampKey_IncludesInProgressUpdatedAtStartedTimestamp()
     {
         const string updatedAt = "2026-05-06T10:28:30+02:00";
@@ -230,6 +249,21 @@ public sealed class TerminalRendererTests
 
         Assert.Contains($"started just now ⋅ {LocalClock(updatedAt)}", key, StringComparison.Ordinal);
         Assert.True(TerminalRenderer.HasDisplayedTimestamps(snapshot));
+    }
+
+    [Fact]
+    public void CreateRenderKey_IncludesInProgressSpinnerFrame()
+    {
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [new TodoItem("current", "Current todo", "in_progress", null, null, null, [])],
+            "hash",
+            "1 todo(s)");
+
+        var firstKey = TerminalViewer.CreateRenderKey(snapshot, DateTimeOffset.Parse("2026-05-06T10:29:00.000+02:00"));
+        var secondKey = TerminalViewer.CreateRenderKey(snapshot, DateTimeOffset.Parse("2026-05-06T10:29:00.040+02:00"));
+
+        Assert.NotEqual(firstKey, secondKey);
     }
 
     [Fact]
@@ -501,6 +535,74 @@ public sealed class TerminalRendererTests
         Assert.Contains("[grey35]done 1h ago", rendered, StringComparison.Ordinal);
         Assert.Contains("[[ ]] Dependent item", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("[dim][[ ]] Dependent item", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BuildTodoListView_KeepsCompletedTodosNestedUntilBranchIsDone()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem("completed-dependency", "Completed dependency", "done", null, null, null, []),
+                new TodoItem("blocked-by-done-a", "Blocked by done A", "blocked", null, null, null, ["completed-dependency"]),
+                new TodoItem("blocked-by-done-b", "Blocked by done B", "pending", null, null, null, ["completed-dependency"])
+            ],
+            "hash",
+            "3 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 100,
+            consoleHeight: 30);
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains("[dim][[✓]] Completed dependency[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey] ├─ [/][orange1][[⊘]] Blocked by done A[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey] └─ [/][[ ]] Blocked by done B", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("[orange1] ├─", rendered, StringComparison.Ordinal);
+        Assert.True(rendered.IndexOf("[[✓]] Completed dependency", StringComparison.Ordinal) < rendered.IndexOf("[grey] ├─ [/][orange1][[⊘]] Blocked by done A", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void BuildTodoListView_KeepsLinearDependencyChainsOnOneTrunk()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem("fix-runtime", "Fix Runtime.register exception handling", "done", null, null, null, []),
+                new TodoItem("verify-native", "Verify native change", "done", null, null, null, []),
+                new TodoItem("resolve-access", "Resolve artifact access", "done", null, null, null, []),
+                new TodoItem("locate-results", "Locate crashed llvm-ir results", "done", null, null, null, ["resolve-access"]),
+                new TodoItem("extract-logcat", "Extract logcat evidence", "done", null, null, null, ["locate-results"]),
+                new TodoItem("reproduce", "Reproduce locally", "in_progress", null, null, null, ["extract-logcat"]),
+                new TodoItem("symbolicate", "Symbolicate native traces", "done", null, null, null, ["extract-logcat"]),
+                new TodoItem("summarize", "Summarize root cause", "done", null, null, null, ["extract-logcat"])
+            ],
+            "hash",
+            "8 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 120,
+            consoleHeight: 30);
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains("[[✓]] Resolve artifact access", rendered, StringComparison.Ordinal);
+        Assert.Contains("[[✓]] Locate crashed llvm-ir results", rendered, StringComparison.Ordinal);
+        Assert.Contains("[[✓]] Extract logcat evidence", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("└─ [[✓]] Locate crashed llvm-ir results", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("└─ [[✓]] Extract logcat evidence", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey] ├─ [/][yellow][[⠋]] Reproduce locally[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey] ├─ [/][dim][[✓]] Symbolicate native traces[/]", rendered, StringComparison.Ordinal);
+        Assert.Contains("[grey] └─ [/][dim][[✓]] Summarize root cause[/]", rendered, StringComparison.Ordinal);
+        Assert.True(rendered.IndexOf("[grey] └─ [/][dim][[✓]] Summarize root cause[/]", StringComparison.Ordinal) < rendered.IndexOf("[dim][[✓]] Fix Runtime.register exception handling[/]", StringComparison.Ordinal));
+        Assert.True(rendered.IndexOf("[dim][[✓]] Fix Runtime.register exception handling[/]", StringComparison.Ordinal) < rendered.IndexOf("[dim][[✓]] Verify native change[/]", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -910,17 +1012,17 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
-    public void BuildTodoListView_FollowsFocusedTodoWithCompletedContextAbove()
+    public void BuildTodoListView_FollowsFocusedTodoWithContextAbove()
     {
         var session = CreateSession(metadataCwd: null, registryCwd: null);
         var snapshot = new TodoSnapshot(
             TodoReadState.Available,
             [
-                new TodoItem("done-1", "Done 1", "done", null, null, null, []),
-                new TodoItem("done-2", "Done 2", "done", null, null, null, []),
-                new TodoItem("done-3", "Done 3", "done", null, null, null, []),
-                new TodoItem("done-4", "Done 4", "done", null, null, null, []),
-                new TodoItem("done-5", "Done 5", "done", null, null, null, []),
+                new TodoItem("prior-1", "Prior 1", "pending", null, null, null, []),
+                new TodoItem("prior-2", "Prior 2", "pending", null, null, null, []),
+                new TodoItem("prior-3", "Prior 3", "pending", null, null, null, []),
+                new TodoItem("prior-4", "Prior 4", "pending", null, null, null, []),
+                new TodoItem("prior-5", "Prior 5", "pending", null, null, null, []),
                 new TodoItem("wip", "Current work", "in_progress", null, null, null, []),
                 new TodoItem("next-1", "Next 1", "pending", null, null, null, []),
                 new TodoItem("next-2", "Next 2", "pending", null, null, null, []),
@@ -945,11 +1047,11 @@ public sealed class TerminalRendererTests
 
         Assert.True(view.HasMoreAbove);
         Assert.True(view.HasMoreBelow);
-        Assert.DoesNotContain("Done 2", rendered, StringComparison.Ordinal);
-        Assert.Contains("Done 3", rendered, StringComparison.Ordinal);
-        Assert.Contains("Done 4", rendered, StringComparison.Ordinal);
-        Assert.Contains("Done 5", rendered, StringComparison.Ordinal);
-        Assert.Contains("[[•]] Current work", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("Prior 2", rendered, StringComparison.Ordinal);
+        Assert.Contains("Prior 3", rendered, StringComparison.Ordinal);
+        Assert.Contains("Prior 4", rendered, StringComparison.Ordinal);
+        Assert.Contains("Prior 5", rendered, StringComparison.Ordinal);
+        Assert.Contains("[[⠋]] Current work", rendered, StringComparison.Ordinal);
         Assert.Contains("Next 1", rendered, StringComparison.Ordinal);
         Assert.DoesNotContain("Next 2", rendered, StringComparison.Ordinal);
     }
@@ -983,7 +1085,7 @@ public sealed class TerminalRendererTests
             displayState: new TodoListDisplayState("wip"),
             focusedContextItemCountBefore: 3);
 
-        Assert.Contains("[[•]] Current work", string.Join('\n', view.Lines), StringComparison.Ordinal);
+        Assert.Contains("[[⠋]] Current work", string.Join('\n', view.Lines), StringComparison.Ordinal);
     }
 
     [Fact]
