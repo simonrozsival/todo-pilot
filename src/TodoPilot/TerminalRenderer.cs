@@ -1299,7 +1299,7 @@ public static class TerminalRenderer
         var label = $"{key}: ";
         var firstValueWidth = Math.Max(1, contentWidth - DisplayLength(ContinuationIndent) - DisplayLength(label));
         var continuationValueWidth = Math.Max(1, contentWidth - DisplayLength(ContinuationIndent) - DisplayLength(DetailValueContinuationIndent));
-        var valueLines = WrapText(value, firstValueWidth, continuationValueWidth);
+        var valueLines = WrapTextPreservingNewLines(value, firstValueWidth, continuationValueWidth);
         for (var i = 0; i < valueLines.Count; i++)
         {
             var line = i == 0
@@ -1307,6 +1307,20 @@ public static class TerminalRenderer
                 : $"{Padding()}{ContinuationIndent}{DetailValueContinuationIndent}{Markup.Escape(valueLines[i])}";
             rows.Add(new ListLine(line, todoId));
         }
+    }
+
+    private static IReadOnlyList<string> WrapTextPreservingNewLines(string text, int firstWidth, int continuationWidth)
+    {
+        var lines = new List<string>();
+        var width = firstWidth;
+        foreach (var segment in text.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n').Split('\n'))
+        {
+            var wrapped = WrapText(segment, width, continuationWidth);
+            lines.AddRange(wrapped);
+            width = continuationWidth;
+        }
+
+        return lines.Count == 0 ? [""] : lines;
     }
 
     public static int GetContentWidth(int? consoleWidth)

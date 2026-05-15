@@ -748,6 +748,42 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void BuildTodoListView_IndentsExpandedDescriptionNewLines()
+    {
+        var session = CreateSession(metadataCwd: null, registryCwd: null);
+        var snapshot = new TodoSnapshot(
+            TodoReadState.Available,
+            [
+                new TodoItem(
+                    "todo-1",
+                    "Expand details",
+                    "blocked",
+                    "First line.\n\nBlocked: Android x86\nHelix submissions still fail.",
+                    null,
+                    null,
+                    [])
+            ],
+            "hash",
+            "1 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-07T12:10:00+02:00"),
+            consoleWidth: 120,
+            consoleHeight: 30,
+            scrollOffset: 0,
+            SessionSidebarDetails.Empty,
+            new TodoListDisplayState("todo-1", "todo-1", ShowFocusMarker: true));
+
+        var rendered = string.Join('\n', view.Lines);
+        Assert.Contains("[grey]description:[/] First line.", rendered, StringComparison.Ordinal);
+        Assert.Contains("\n       Blocked: Android x86", rendered, StringComparison.Ordinal);
+        Assert.Contains("\n       Helix submissions still fail.", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("\nBlocked: Android x86", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void BuildTodoListView_ExpandedDoneTodoDoesNotShowGenericRevisitPolicy()
     {
         var session = CreateSession(metadataCwd: null, registryCwd: null);
