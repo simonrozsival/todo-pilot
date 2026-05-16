@@ -760,7 +760,7 @@ public static class TerminalRenderer
             Path.GetFileName(session.DisplayCwd),
             ShortId(session.Registry.SessionId));
 
-        return name ?? ShortId(session.Registry.SessionId);
+        return NormalizeSessionName(name) ?? ShortId(session.Registry.SessionId);
     }
 
     public static string FormatTodoLine(TodoItem todo, DateTimeOffset now)
@@ -1420,6 +1420,57 @@ public static class TerminalRenderer
 
             builder.Append(markup[i]);
             i++;
+        }
+
+        return builder.ToString();
+    }
+
+    private static string? NormalizeSessionName(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Replace("\r\n", "\n", StringComparison.Ordinal).Replace('\r', '\n');
+        var lines = normalized.Split('\n');
+        var firstLineIndex = Array.FindIndex(lines, line => !string.IsNullOrWhiteSpace(line));
+        if (firstLineIndex < 0)
+        {
+            return null;
+        }
+
+        var firstLine = CollapseWhitespace(lines[firstLineIndex]);
+        if (firstLine.Length == 0)
+        {
+            return null;
+        }
+
+        var hasMoreLines = lines
+            .Skip(firstLineIndex + 1)
+            .Any(line => !string.IsNullOrWhiteSpace(line));
+        return hasMoreLines ? $"{firstLine} …" : firstLine;
+    }
+
+    private static string CollapseWhitespace(string value)
+    {
+        var builder = new StringBuilder(value.Length);
+        var pendingSpace = false;
+        foreach (var ch in value)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                pendingSpace = builder.Length > 0;
+                continue;
+            }
+
+            if (pendingSpace)
+            {
+                builder.Append(' ');
+                pendingSpace = false;
+            }
+
+            builder.Append(ch);
         }
 
         return builder.ToString();

@@ -68,6 +68,53 @@ public sealed class TerminalRendererTests
     }
 
     [Fact]
+    public void GetSessionName_UsesFirstNonEmptyLineForMultilineName()
+    {
+        var session = new DiscoveredSession(
+            new SessionRegistryEntry { SessionId = "11111111-1111-1111-1111-111111111111" },
+            IsStale: false,
+            HasSessionDatabase: true,
+            Metadata: new SessionMetadata(
+                "11111111-1111-1111-1111-111111111111",
+                Cwd: null,
+                Repository: "repo",
+                Branch: null,
+                Summary: "Create   a\tMAUI repro\r\n\r\ncrashing due to the following:\nJNI ERROR",
+                CreatedAt: null,
+                UpdatedAt: null));
+
+        Assert.Equal("Create a MAUI repro …", TerminalRenderer.GetSessionName(session));
+    }
+
+    [Fact]
+    public void BuildTodoListView_DoesNotEmbedNewlinesFromMultilineSessionName()
+    {
+        var session = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "Create repro\r\ncrashing due to the following:\nJNI ERROR",
+            repository: "repo",
+            branch: "main",
+            cwd: "/tmp/repro");
+        var snapshot = new TodoSnapshot(TodoReadState.Available, [], "hash", "0 todo(s)");
+
+        var view = TerminalRenderer.BuildTodoListView(
+            session,
+            snapshot,
+            DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"),
+            consoleWidth: 120,
+            consoleHeight: 20);
+        var rendered = string.Join('\n', view.Lines);
+
+        Assert.All(view.Lines, line =>
+        {
+            Assert.DoesNotContain('\n', line);
+            Assert.DoesNotContain('\r', line);
+        });
+        Assert.Contains("# TODOs for \"Create repro …\"", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("crashing due", rendered, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void FormatTodoLine_AppendsGrayCompletedTimestampOutsideDimCompletedText()
     {
         const string updatedAt = "2026-05-06T12:48:00+02:00";
@@ -1444,6 +1491,32 @@ public sealed class TerminalRendererTests
             && line.Contains("ff8d2dee", StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("last active", StringComparison.Ordinal));
         Assert.Contains(lines, line => line.Contains("5m ago", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void FormatSessionSelectionChoice_DoesNotEmbedNewlinesFromMultilineSessionName()
+    {
+        var session = CreateSessionWithMetadata(
+            sessionId: "11111111-1111-1111-1111-111111111111",
+            summary: "Create repro\ncrashing due to the following:\nJNI ERROR",
+            repository: "repo-one",
+            branch: "main",
+            cwd: "/tmp/repro");
+
+        var lines = TerminalViewer.FormatSessionSelectionChoiceLines(
+            session,
+            selected: true,
+            maxWidth: 120,
+            now: DateTimeOffset.Parse("2026-05-06T12:54:00+02:00"));
+        var rendered = string.Join('\n', lines);
+
+        Assert.All(lines, line =>
+        {
+            Assert.DoesNotContain('\n', line);
+            Assert.DoesNotContain('\r', line);
+        });
+        Assert.Contains("Create repro …", rendered, StringComparison.Ordinal);
+        Assert.DoesNotContain("crashing due", rendered, StringComparison.Ordinal);
     }
 
     [Fact]
